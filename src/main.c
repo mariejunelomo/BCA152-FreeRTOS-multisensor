@@ -1,14 +1,29 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
 
+
+// ----------------------------------------------------
+// Pin definitions
+// ----------------------------------------------------
 #define DHT_PIN GPIO_NUM_4
+#define LDR_PIN GPIO_NUM_34
+
+
+// ----------------------------------------------------
+// ADC configuration
+// GPIO34 = ADC1 Channel 6 on ESP32
+// ----------------------------------------------------
+#define LDR_ADC_CHANNEL ADC_CHANNEL_6
+
 
 // ----------------------------------------------------
 // DHT22 reading function
@@ -61,7 +76,7 @@ static bool dht22_read(float *temperature, float *humidity)
     // Read 40 bits
     for (int i = 0; i < 40; i++)
     {
-        // Wait for the beginning of the bit
+        // Wait for beginning of bit
         start = esp_timer_get_time();
 
         while (gpio_get_level(DHT_PIN) == 0)
@@ -79,13 +94,14 @@ static bool dht22_read(float *temperature, float *humidity)
                 return false;
         }
 
-        int64_t pulse_length = esp_timer_get_time() - high_start;
+        int64_t pulse_length =
+            esp_timer_get_time() - high_start;
 
-        // Around 26-28 us = 0
-        // Around 70 us = 1
         int byte_index = i / 8;
         int bit_index = 7 - (i % 8);
 
+        // Around 26-28 us = 0
+        // Around 70 us = 1
         if (pulse_length > 40)
         {
             data[byte_index] |= (1 << bit_index);
@@ -105,79 +121,123 @@ static bool dht22_read(float *temperature, float *humidity)
     }
 
     // Humidity
-   *humidity = ((data[0] << 8) | data[1]) / 10.0f;
+    *humidity =
+        ((data[0] << 8) | data[1]) / 10.0f;
 
     // Temperature
-int16_t raw_temperature = (data[2] << 8) | data[3];
+    int16_t raw_temperature =
+        (data[2] << 8) | data[3];
 
     if (raw_temperature & 0x8000)
     {
         raw_temperature &= 0x7FFF;
-        *temperature = -(raw_temperature / 10.0f);
+
+        *temperature =
+            -(raw_temperature / 10.0f);
     }
     else
     {
-        *temperature = raw_temperature / 10.0f;
+        *temperature =
+            raw_temperature / 10.0f;
     }
 
     return true;
 }
 
-// ----------------------------------------------------
-// Task A
-// ----------------------------------------------------
-void taskA(void *parameter)
-{
-    while (1)
-    {
-        printf("Task A running\n");
-
-        // Block for 1 second
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
 
 // ----------------------------------------------------
-// Task B
-// ----------------------------------------------------
-void taskB(void *parameter)
-{
-    while (1)
-    {
-        printf("Task B running\n");
-
-        // Block for 2 seconds
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-}
-
-// ----------------------------------------------------
-// DHT22 Sensor Task
+// Sensor Task
+// Reads DHT22 and LDR
 // ----------------------------------------------------
 void sensorTask(void *parameter)
 {
     float temperature;
     float humidity;
 
+    // Create ADC unit
+    adc_oneshot_unit_handle_t adc_handle;
+
+    adc_oneshot_unit_init_cfg_t adc_init_config = {
+        .unit_id = ADC_UNIT_1,
+    };
+
+    adc_oneshot_new_unit(
+        &adc_init_config,
+        &adc_handle
+    );
+
+    // Configure LDR ADC channel
+    adc_oneshot_chan_cfg_t adc_channel_config = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten = ADC_ATTEN_DB_12,
+    };
+
+    adc_oneshot_config_channel(
+        adc_handle,
+        LDR_ADC_CHANNEL,
+        &adc_channel_config
+    );
+
     while (1)
     {
+        // --------------------------------------------
+        // Read DHT22
+        // --------------------------------------------
         if (dht22_read(&temperature, &humidity))
         {
-            printf("Temperature: %.2f C\n", temperature);
-            printf("Humidity: %.2f %%\n", humidity);
+            printf("Temperature: %.2f C\n",
+                   temperature);
+
+            printf("Humidity: %.2f %%\n",
+                   humidity);
         }
         else
         {
             printf("DHT22 reading failed\n");
         }
 
-        // DHT22 should not be read too frequently.
-        // Wait 2 seconds before the next reading.
+
+        // --------------------------------------------
+        // Read LDR
+        // --------------------------------------------
+        int ldr_raw = 0;
+
+        esp_err_t adc_result =
+            adc_oneshot_read(
+                adc_handle,
+                LDR_ADC_CHANNEL,
+                &ldr_raw
+            );
+
+        if (adc_result == ESP_OK)
+        {
+            // Convert raw ADC value (0-4095)
+            // into a documented 0-100% representation.
+            //
+            // This is a relative light-level
+            // representation, NOT calibrated lux.
+            int light_level =
+                (ldr_raw * 100) / 4095;
+
+            printf("LDR Raw: %d\n",
+                   ldr_raw);
+
+            printf("Light Level: %d %%\n",
+                   light_level);
+        }
+        else
+        {
+            printf("LDR reading failed\n");
+        }
+
+
         printf("SensorTask waiting 2 sec\n");
 
+        // Block for 2 seconds
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
+
 
 // ----------------------------------------------------
 // Main
@@ -188,31 +248,21 @@ void app_main(void)
     printf("BCA152 FreeRTOS Multisensor\n");
     printf("System starting...\n");
 
+
+    // --------------------------------------------
     // Configure DHT22 pin
-    gpio_set_direction(DHT_PIN, GPIO_MODE_INPUT);
+    // --------------------------------------------
+    gpio_set_direction(
+        DHT_PIN,
+        GPIO_MODE_INPUT
+    );
+
     gpio_pullup_en(DHT_PIN);
 
-    // Create Task A
-    xTaskCreate(
-        taskA,
-        "Task A",
-        2048,
-        NULL,
-        1,
-        NULL
-    );
 
-    // Create Task B
-    xTaskCreate(
-        taskB,
-        "Task B",
-        2048,
-        NULL,
-        1,
-        NULL
-    );
-
-    // Create DHT22 Sensor Task
+    // --------------------------------------------
+    // Create Sensor Task
+    // --------------------------------------------
     xTaskCreate(
         sensorTask,
         "SensorTask",
