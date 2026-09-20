@@ -8,6 +8,7 @@
 
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+
 #include "esp_adc/adc_oneshot.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
@@ -25,9 +26,25 @@
 #define OLED_SCL_PIN        GPIO_NUM_22
 #define OLED_I2C_PORT       I2C_NUM_0
 #define OLED_ADDR           0x3C
-
 #define OLED_WIDTH          128
 #define OLED_HEIGHT         64
+
+/* Rotary Encoder */
+#define ENCODER_CLK_PIN     GPIO_NUM_32
+#define ENCODER_DT_PIN      GPIO_NUM_33
+#define ENCODER_SW_PIN      GPIO_NUM_25
+
+/* =========================================================
+   DISPLAY MODE
+   ========================================================= */
+
+typedef enum
+{
+    TEMPERATURE,
+    HUMIDITY,
+    LIGHT,
+    MOTION
+} DisplayMode;
 
 /* =========================================================
    SENSOR DATA
@@ -46,6 +63,7 @@ typedef struct
    ========================================================= */
 
 static QueueHandle_t sensorQueue = NULL;
+static QueueHandle_t displayModeQueue = NULL;
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 
@@ -55,7 +73,8 @@ static adc_oneshot_unit_handle_t adc_handle = NULL;
 
 static void oled_command(uint8_t command)
 {
-    uint8_t data[2] = {
+    uint8_t data[2] =
+    {
         0x00,
         command
     };
@@ -71,7 +90,8 @@ static void oled_command(uint8_t command)
 
 static void oled_data(uint8_t data_byte)
 {
-    uint8_t data[2] = {
+    uint8_t data[2] =
+    {
         0x40,
         data_byte
     };
@@ -87,7 +107,8 @@ static void oled_data(uint8_t data_byte)
 
 static void oled_init(void)
 {
-    i2c_config_t config = {
+    i2c_config_t config =
+    {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = OLED_SDA_PIN,
         .scl_io_num = OLED_SCL_PIN,
@@ -161,9 +182,11 @@ static void oled_clear(void)
     {
         oled_set_cursor(page, 0);
 
-        for (uint8_t column = 0;
-             column < OLED_WIDTH;
-             column++)
+        for (
+            uint8_t column = 0;
+            column < OLED_WIDTH;
+            column++
+        )
         {
             oled_data(0x00);
         }
@@ -184,9 +207,7 @@ static void oled_write_char(
 
     switch (c)
     {
-        /* ----------------------------
-           Letters
-           ---------------------------- */
+        /* Letters */
 
         case 'A':
             pixels[0] = 0x7E;
@@ -202,6 +223,14 @@ static void oled_write_char(
             pixels[2] = 0x41;
             pixels[3] = 0x41;
             pixels[4] = 0x22;
+            break;
+
+        case 'D':
+            pixels[0] = 0x7F;
+            pixels[1] = 0x41;
+            pixels[2] = 0x41;
+            pixels[3] = 0x22;
+            pixels[4] = 0x1C;
             break;
 
         case 'E':
@@ -300,9 +329,15 @@ static void oled_write_char(
             pixels[4] = 0x3F;
             break;
 
-        /* ----------------------------
-           Numbers
-           ---------------------------- */
+        case 'Y':
+            pixels[0] = 0x03;
+            pixels[1] = 0x0C;
+            pixels[2] = 0x70;
+            pixels[3] = 0x0C;
+            pixels[4] = 0x03;
+            break;
+
+        /* Numbers */
 
         case '0':
             pixels[0] = 0x3E;
@@ -384,9 +419,7 @@ static void oled_write_char(
             pixels[4] = 0x1E;
             break;
 
-        /* ----------------------------
-           Symbols
-           ---------------------------- */
+        /* Symbols */
 
         case '.':
             pixels[2] = 0x60;
@@ -399,6 +432,14 @@ static void oled_write_char(
             pixels[2] = 0x08;
             pixels[3] = 0x08;
             pixels[4] = 0x08;
+            break;
+
+        case '%':
+            pixels[0] = 0x63;
+            pixels[1] = 0x13;
+            pixels[2] = 0x08;
+            pixels[3] = 0x64;
+            pixels[4] = 0x63;
             break;
 
         case ' ':
@@ -444,16 +485,13 @@ static bool dht22_read(
     float *humidity
 )
 {
-    uint8_t data[5] = {
+    uint8_t data[5] =
+    {
         0, 0, 0, 0, 0
     };
 
     printf("DHT22: Starting read...\n");
 
-    /*
-     * Send start signal.
-     * Host pulls data LOW for at least 1 ms.
-     */
     gpio_set_direction(
         DHT_PIN,
         GPIO_MODE_OUTPUT
@@ -464,15 +502,8 @@ static bool dht22_read(
         0
     );
 
-    /*
-     * Use the same timing method
-     * as the functioning reference.
-     */
     esp_rom_delay_us(1200);
 
-    /*
-     * Release the line.
-     */
     gpio_set_level(
         DHT_PIN,
         1
@@ -487,9 +518,8 @@ static bool dht22_read(
 
     gpio_pullup_en(DHT_PIN);
 
-    /*
-     * Wait for DHT22 response LOW.
-     */
+    /* Wait for DHT22 response LOW */
+
     int64_t start =
         esp_timer_get_time();
 
@@ -507,9 +537,8 @@ static bool dht22_read(
         }
     }
 
-    /*
-     * Wait for DHT22 response HIGH.
-     */
+    /* Wait for DHT22 response HIGH */
+
     start =
         esp_timer_get_time();
 
@@ -527,9 +556,8 @@ static bool dht22_read(
         }
     }
 
-    /*
-     * Wait for response HIGH to finish.
-     */
+    /* Wait for response HIGH to finish */
+
     start =
         esp_timer_get_time();
 
@@ -547,15 +575,12 @@ static bool dht22_read(
         }
     }
 
-    /*
-     * Read 40 bits.
-     */
+    /* Read 40 bits */
+
     for (int i = 0; i < 40; i++)
     {
-        /*
-         * Wait for beginning of
-         * the HIGH pulse.
-         */
+        /* Wait for beginning of HIGH pulse */
+
         start =
             esp_timer_get_time();
 
@@ -574,9 +599,8 @@ static bool dht22_read(
             }
         }
 
-        /*
-         * Measure HIGH pulse duration.
-         */
+        /* Measure HIGH pulse */
+
         int64_t high_start =
             esp_timer_get_time();
 
@@ -606,12 +630,6 @@ static bool dht22_read(
         int bit_index =
             7 - (i % 8);
 
-        /*
-         * Approximately:
-         *
-         * ~26-28 us = 0
-         * ~70 us    = 1
-         */
         if (pulse_length > 40)
         {
             data[byte_index] |=
@@ -628,9 +646,8 @@ static bool dht22_read(
         data[4]
     );
 
-    /*
-     * Check checksum.
-     */
+    /* Check checksum */
+
     uint8_t checksum =
         data[0] +
         data[1] +
@@ -649,9 +666,8 @@ static bool dht22_read(
         return false;
     }
 
-    /*
-     * Humidity.
-     */
+    /* Humidity */
+
     int rawHumidity =
         ((int)data[0] << 8) |
         data[1];
@@ -659,9 +675,8 @@ static bool dht22_read(
     *humidity =
         rawHumidity / 10.0f;
 
-    /*
-     * Temperature.
-     */
+    /* Temperature */
+
     int rawTemperature =
         ((int)data[2] << 8) |
         data[3];
@@ -679,9 +694,8 @@ static bool dht22_read(
             rawTemperature / 10.0f;
     }
 
-    /*
-     * Reject impossible all-zero readings.
-     */
+    /* Reject impossible all-zero readings */
+
     if (
         *temperature == 0.0f &&
         *humidity == 0.0f
@@ -714,7 +728,8 @@ static bool dht22_read(
 
 static void ldr_init(void)
 {
-    adc_oneshot_unit_init_cfg_t init_config = {
+    adc_oneshot_unit_init_cfg_t init_config =
+    {
         .unit_id = LDR_ADC_UNIT
     };
 
@@ -725,7 +740,8 @@ static void ldr_init(void)
         )
     );
 
-    adc_oneshot_chan_cfg_t channel_config = {
+    adc_oneshot_chan_cfg_t channel_config =
+    {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
         .atten = ADC_ATTEN_DB_12
     };
@@ -801,9 +817,8 @@ static void SensorTask(void *pvParameters)
         float temperature = 0.0f;
         float humidity = 0.0f;
 
-        /*
-         * DHT22
-         */
+        /* DHT22 */
+
         if (
             dht22_read(
                 &temperature,
@@ -834,22 +849,16 @@ static void SensorTask(void *pvParameters)
                 0.0f;
         }
 
-        /*
-         * LDR
-         */
+        /* LDR */
+
         sensorData.lightLevel =
             read_light_level();
 
-        /*
-         * Motion sensor will be
-         * added in a later step.
-         */
+        /* Motion will be added later */
+
         sensorData.motionDetected =
             false;
 
-        /*
-         * Serial output.
-         */
         printf(
             "Temperature: %.2f C\n",
             sensorData.temperature
@@ -860,9 +869,8 @@ static void SensorTask(void *pvParameters)
             sensorData.humidity
         );
 
-        /*
-         * Send sensor data to queue.
-         */
+        /* Send sensor data */
+
         if (
             xQueueSend(
                 sensorQueue,
@@ -886,13 +894,116 @@ static void SensorTask(void *pvParameters)
             "SensorTask waiting 2 sec\n"
         );
 
-        /*
-         * Periodic execution.
-         * Required by the laboratory.
-         */
+        /* Periodic execution */
+
         vTaskDelayUntil(
             &lastWakeTime,
             pdMS_TO_TICKS(2000)
+        );
+    }
+}
+
+/* =========================================================
+   INPUT TASK
+   ========================================================= */
+
+static void InputTask(void *pvParameters)
+{
+    DisplayMode currentMode =
+        TEMPERATURE;
+
+    int lastCLK =
+        gpio_get_level(ENCODER_CLK_PIN);
+
+    printf(
+        "InputTask started\n"
+    );
+
+    printf(
+        "Current DisplayMode: TEMPERATURE\n"
+    );
+
+    while (1)
+    {
+        int currentCLK =
+            gpio_get_level(ENCODER_CLK_PIN);
+
+        /*
+         * Detect a falling edge on CLK.
+         */
+
+        if (
+            currentCLK != lastCLK &&
+            currentCLK == 0
+        )
+        {
+            int currentDT =
+                gpio_get_level(ENCODER_DT_PIN);
+
+            /*
+             * Determine direction.
+             */
+
+            if (currentDT != currentCLK)
+            {
+                /*
+                 * Clockwise
+                 */
+
+                if (currentMode == MOTION)
+                {
+                    currentMode =
+                        TEMPERATURE;
+                }
+                else
+                {
+                    currentMode++;
+                }
+            }
+            else
+            {
+                /*
+                 * Counter-clockwise
+                 */
+
+                if (currentMode == TEMPERATURE)
+                {
+                    currentMode =
+                        MOTION;
+                }
+                else
+                {
+                    currentMode--;
+                }
+            }
+
+            /*
+             * Send the selected mode
+             * to DisplayTask.
+             */
+
+            xQueueSend(
+                displayModeQueue,
+                &currentMode,
+                0
+            );
+
+            printf(
+                "InputTask: DisplayMode changed to %d\n",
+                currentMode
+            );
+        }
+
+        lastCLK =
+            currentCLK;
+
+        /*
+         * The encoder switch is not used yet.
+         * It can be integrated later if needed.
+         */
+
+        vTaskDelay(
+            pdMS_TO_TICKS(5)
         );
     }
 }
@@ -905,6 +1016,9 @@ static void DisplayTask(void *pvParameters)
 {
     SensorData sensorData;
 
+    DisplayMode currentMode =
+        TEMPERATURE;
+
     printf(
         "DisplayTask started\n"
     );
@@ -912,24 +1026,72 @@ static void DisplayTask(void *pvParameters)
     /*
      * OLED is owned ONLY by DisplayTask.
      */
+
     oled_init();
+
     oled_clear();
 
     while (1)
     {
+        /*
+         * Check whether InputTask
+         * selected another display page.
+         */
+
+        DisplayMode newMode;
+
+        if (
+            xQueueReceive(
+                displayModeQueue,
+                &newMode,
+                0
+            ) == pdPASS
+        )
+        {
+            currentMode =
+                newMode;
+
+            printf(
+                "DisplayTask: "
+                "Switched to DisplayMode %d\n",
+                currentMode
+            );
+        }
+
+        /*
+         * Receive sensor information.
+         */
+
         if (
             xQueueReceive(
                 sensorQueue,
                 &sensorData,
-                portMAX_DELAY
+                pdMS_TO_TICKS(100)
             ) == pdPASS
         )
         {
+            /*
+             * Check for a newer display mode.
+             */
+
+            while (
+                xQueueReceive(
+                    displayModeQueue,
+                    &newMode,
+                    0
+                ) == pdPASS
+            )
+            {
+                currentMode =
+                    newMode;
+            }
+
             oled_clear();
 
             /*
-             * ROOM MONITOR
+             * Display title.
              */
+
             oled_write_string(
                 0,
                 28,
@@ -937,37 +1099,143 @@ static void DisplayTask(void *pvParameters)
             );
 
             /*
-             * TEMPERATURE
+             * Display selected measurement.
              */
-            oled_write_string(
-                2,
-                20,
-                "TEMPERATURE"
-            );
 
-            /*
-             * Temperature value.
-             */
-            char temperatureText[16];
+            switch (currentMode)
+            {
+                case TEMPERATURE:
+                {
+                    char temperatureText[16];
 
-            snprintf(
-                temperatureText,
-                sizeof(temperatureText),
-                "%.1f C",
-                sensorData.temperature
-            );
+                    oled_write_string(
+                        2,
+                        20,
+                        "TEMPERATURE"
+                    );
 
-            oled_write_string(
-                4,
-                34,
-                temperatureText
-            );
+                    snprintf(
+                        temperatureText,
+                        sizeof(temperatureText),
+                        "%.1f C",
+                        sensorData.temperature
+                    );
 
-            printf(
-                "DisplayTask updated OLED: "
-                "Temperature = %.2f C\n",
-                sensorData.temperature
-            );
+                    oled_write_string(
+                        4,
+                        40,
+                        temperatureText
+                    );
+
+                    printf(
+                        "DisplayTask: "
+                        "Temperature page = %.2f C\n",
+                        sensorData.temperature
+                    );
+
+                    break;
+                }
+
+                case HUMIDITY:
+                {
+                    char humidityText[16];
+
+                    oled_write_string(
+                        2,
+                        34,
+                        "HUMIDITY"
+                    );
+
+                    snprintf(
+                        humidityText,
+                        sizeof(humidityText),
+                        "%.1f %%",
+                        sensorData.humidity
+                    );
+
+                    oled_write_string(
+                        4,
+                        40,
+                        humidityText
+                    );
+
+                    printf(
+                        "DisplayTask: "
+                        "Humidity page = %.2f %%\n",
+                        sensorData.humidity
+                    );
+
+                    break;
+                }
+
+                case LIGHT:
+                {
+                    char lightText[16];
+
+                    oled_write_string(
+                        2,
+                        46,
+                        "LIGHT"
+                    );
+
+                    snprintf(
+                        lightText,
+                        sizeof(lightText),
+                        "%d %%",
+                        sensorData.lightLevel
+                    );
+
+                    oled_write_string(
+                        4,
+                        40,
+                        lightText
+                    );
+
+                    printf(
+                        "DisplayTask: "
+                        "Light page = %d %%\n",
+                        sensorData.lightLevel
+                    );
+
+                    break;
+                }
+
+                case MOTION:
+                {
+                    oled_write_string(
+                        2,
+                        40,
+                        "MOTION"
+                    );
+
+                    if (
+                        sensorData.motionDetected
+                    )
+                    {
+                        oled_write_string(
+                            4,
+                            40,
+                            "1"
+                        );
+                    }
+                    else
+                    {
+                        oled_write_string(
+                            4,
+                            40,
+                            "0"
+                        );
+                    }
+
+                    printf(
+                        "DisplayTask: "
+                        "Motion page = %d\n",
+                        sensorData.motionDetected
+                    );
+
+                    break;
+                }
+            }
         }
     }
 }
@@ -991,11 +1259,13 @@ void app_main(void)
     /*
      * Initialize LDR.
      */
+
     ldr_init();
 
     /*
      * Configure DHT22.
      */
+
     gpio_set_direction(
         DHT_PIN,
         GPIO_MODE_INPUT
@@ -1004,8 +1274,39 @@ void app_main(void)
     gpio_pullup_en(DHT_PIN);
 
     /*
+     * Configure rotary encoder.
+     */
+
+    gpio_config_t encoder_config =
+    {
+        .pin_bit_mask =
+            (1ULL << ENCODER_CLK_PIN) |
+            (1ULL << ENCODER_DT_PIN) |
+            (1ULL << ENCODER_SW_PIN),
+
+        .mode =
+            GPIO_MODE_INPUT,
+
+        .pull_up_en =
+            GPIO_PULLUP_ENABLE,
+
+        .pull_down_en =
+            GPIO_PULLDOWN_DISABLE,
+
+        .intr_type =
+            GPIO_INTR_DISABLE
+    };
+
+    ESP_ERROR_CHECK(
+        gpio_config(
+            &encoder_config
+        )
+    );
+
+    /*
      * Create Sensor Queue.
      */
+
     sensorQueue =
         xQueueCreate(
             5,
@@ -1026,10 +1327,34 @@ void app_main(void)
     );
 
     /*
+     * Create Display Mode Queue.
+     */
+
+    displayModeQueue =
+        xQueueCreate(
+            5,
+            sizeof(DisplayMode)
+        );
+
+    if (displayModeQueue == NULL)
+    {
+        printf(
+            "Failed to create Display Mode Queue\n"
+        );
+
+        return;
+    }
+
+    printf(
+        "Display Mode Queue created successfully\n"
+    );
+
+    /*
      * Create SensorTask.
      *
      * Priority = 2
      */
+
     xTaskCreate(
         SensorTask,
         "SensorTask",
@@ -1044,12 +1369,28 @@ void app_main(void)
      *
      * Priority = 1
      */
+
     xTaskCreate(
         DisplayTask,
         "DisplayTask",
         4096,
         NULL,
         1,
+        NULL
+    );
+
+    /*
+     * Create InputTask.
+     *
+     * Priority = 3
+     */
+
+    xTaskCreate(
+        InputTask,
+        "InputTask",
+        4096,
+        NULL,
+        3,
         NULL
     );
 }
