@@ -4,6 +4,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
@@ -23,6 +24,28 @@
 // GPIO34 = ADC1 Channel 6 on ESP32
 // ----------------------------------------------------
 #define LDR_ADC_CHANNEL ADC_CHANNEL_6
+
+
+// ----------------------------------------------------
+// Sensor Data Structure
+// Used to group sensor readings together
+// ----------------------------------------------------
+struct SensorData
+{
+    float temperature;
+    float humidity;
+    int lightLevel;
+    bool motionDetected;
+};
+
+
+// ----------------------------------------------------
+// Sensor Queue
+// Used to send SensorData from SensorTask
+// to future consumer tasks such as DisplayTask
+// and AlarmTask.
+// ----------------------------------------------------
+QueueHandle_t sensorQueue;
 
 
 // ----------------------------------------------------
@@ -151,8 +174,8 @@ static bool dht22_read(float *temperature, float *humidity)
 // ----------------------------------------------------
 void sensorTask(void *parameter)
 {
-    float temperature;
-    float humidity;
+    float temperature = 0.0f;
+    float humidity = 0.0f;
 
     // Create ADC unit
     adc_oneshot_unit_handle_t adc_handle;
@@ -212,6 +235,8 @@ void sensorTask(void *parameter)
                 &ldr_raw
             );
 
+        int light_level = 0;
+
         if (adc_result == ESP_OK)
         {
             // Convert raw ADC value (0-4095)
@@ -219,7 +244,7 @@ void sensorTask(void *parameter)
             //
             // This is a relative light-level
             // representation, NOT calibrated lux.
-            int light_level =
+            light_level =
                 (ldr_raw * 100) / 4095;
 
             printf("LDR Raw: %d\n",
@@ -231,6 +256,36 @@ void sensorTask(void *parameter)
         else
         {
             printf("LDR reading failed\n");
+        }
+
+
+        // --------------------------------------------
+        // Create SensorData message
+        // --------------------------------------------
+        struct SensorData sensorData;
+
+        sensorData.temperature = temperature;
+        sensorData.humidity = humidity;
+        sensorData.lightLevel = light_level;
+
+        // PIR sensor has not been added yet.
+        // Default to false until MotionTask is implemented.
+        sensorData.motionDetected = false;
+
+
+        // --------------------------------------------
+        // Send SensorData to the Sensor Queue
+        // --------------------------------------------
+        if (xQueueSend(
+                sensorQueue,
+                &sensorData,
+                portMAX_DELAY) != pdPASS)
+        {
+            printf("Failed to send SensorData to queue\n");
+        }
+        else
+        {
+            printf("SensorData sent to queue\n");
         }
 
 
@@ -264,6 +319,23 @@ void app_main(void)
     );
 
     gpio_pullup_en(DHT_PIN);
+
+
+    // --------------------------------------------
+    // Create Sensor Queue
+    // --------------------------------------------
+    sensorQueue = xQueueCreate(
+        10,
+        sizeof(struct SensorData)
+    );
+
+    if (sensorQueue == NULL)
+    {
+        printf("Failed to create Sensor Queue\n");
+        return;
+    }
+
+    printf("Sensor Queue created successfully\n");
 
 
     // --------------------------------------------
