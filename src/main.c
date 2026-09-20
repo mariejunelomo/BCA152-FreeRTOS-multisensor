@@ -147,7 +147,7 @@ static bool dht22_read(float *temperature, float *humidity)
 
 // ----------------------------------------------------
 // Sensor Task
-// Reads DHT22 and LDR
+// Reads DHT22 and LDR periodically
 // ----------------------------------------------------
 void sensorTask(void *parameter)
 {
@@ -177,6 +177,9 @@ void sensorTask(void *parameter)
         LDR_ADC_CHANNEL,
         &adc_channel_config
     );
+
+    // Start the periodic timing reference
+    TickType_t lastWakeTime = xTaskGetTickCount();
 
     while (1)
     {
@@ -233,8 +236,11 @@ void sensorTask(void *parameter)
 
         printf("SensorTask waiting 2 sec\n");
 
-        // Block for 2 seconds
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        // Maintain a periodic 2-second execution interval
+        vTaskDelayUntil(
+            &lastWakeTime,
+            pdMS_TO_TICKS(2000)
+        );
     }
 }
 
