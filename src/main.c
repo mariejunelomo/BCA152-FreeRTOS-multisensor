@@ -1003,7 +1003,7 @@ static void InputTask(void *pvParameters)
          */
 
         vTaskDelay(
-            pdMS_TO_TICKS(5)
+            pdMS_TO_TICKS(10)
         );
     }
 }
