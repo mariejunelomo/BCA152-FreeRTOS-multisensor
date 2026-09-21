@@ -15,87 +15,162 @@
 
 #define DHT_PIN             GPIO_NUM_4
 
+#define LDR_ADC_UNIT        ADC_UNIT_1
+
 #define LDR_ADC_CHANNEL     ADC_CHANNEL_6
 
 #define EVENT_ALARM         BIT2
 
 static bool dht_read(float *temperature, float *humidity)
 {
-    uint8_t data[5] = {0};
+    uint8_t data[5] = {0, 0, 0, 0, 0};
 
-    gpio_set_direction(DHT_PIN, GPIO_MODE_OUTPUT);
+    safe_printf("DHT22: Starting read...\n");
+
+    gpio_set_direction(
+        DHT_PIN,
+        GPIO_MODE_OUTPUT
+    );
+
     gpio_set_level(DHT_PIN, 0);
-    esp_rom_delay_us(20000);
+    esp_rom_delay_us(1200);
 
     gpio_set_level(DHT_PIN, 1);
     esp_rom_delay_us(30);
 
-    gpio_set_direction(DHT_PIN, GPIO_MODE_INPUT);
+    gpio_set_direction(
+        DHT_PIN,
+        GPIO_MODE_INPUT
+    );
+
+    gpio_pullup_en(DHT_PIN);
 
     int64_t start = esp_timer_get_time();
 
     while (gpio_get_level(DHT_PIN) == 1)
     {
-        if ((esp_timer_get_time() - start) > 100)
+        if (esp_timer_get_time() - start > 100)
+        {
+            safe_printf(
+                "DHT22: Response LOW timeout\n"
+            );
             return false;
+        }
     }
 
     start = esp_timer_get_time();
 
     while (gpio_get_level(DHT_PIN) == 0)
     {
-        if ((esp_timer_get_time() - start) > 100)
+        if (esp_timer_get_time() - start > 100)
+        {
+            safe_printf(
+                "DHT22: Response HIGH timeout\n"
+            );
             return false;
+        }
     }
 
     start = esp_timer_get_time();
 
     while (gpio_get_level(DHT_PIN) == 1)
     {
-        if ((esp_timer_get_time() - start) > 100)
+        if (esp_timer_get_time() - start > 100)
+        {
+            safe_printf(
+                "DHT22: Response DATA timeout\n"
+            );
             return false;
+        }
     }
 
     for (int i = 0; i < 40; i++)
     {
+        start = esp_timer_get_time();
+
         while (gpio_get_level(DHT_PIN) == 0)
         {
-            if ((esp_timer_get_time() - start) > 1000)
+            if (esp_timer_get_time() - start > 100)
+            {
+                safe_printf(
+                    "DHT22: Bit %d LOW timeout\n",
+                    i
+                );
                 return false;
+            }
         }
 
-        int64_t highStart = esp_timer_get_time();
+        int64_t high_start =
+            esp_timer_get_time();
 
         while (gpio_get_level(DHT_PIN) == 1)
         {
-            if ((esp_timer_get_time() - highStart) > 100)
+            if (esp_timer_get_time() - high_start > 100)
+            {
+                safe_printf(
+                    "DHT22: Bit %d HIGH timeout\n",
+                    i
+                );
                 return false;
+            }
         }
 
-        int64_t highTime =
-            esp_timer_get_time() - highStart;
+        int64_t pulse_length =
+            esp_timer_get_time() - high_start;
 
-        data[i / 8] <<= 1;
+        int byte_index = i / 8;
+        int bit_index = 7 - (i % 8);
 
-        if (highTime > 40)
-            data[i / 8] |= 1;
+        if (pulse_length > 40)
+        {
+            data[byte_index] |=
+                (1 << bit_index);
+        }
     }
 
+    safe_printf(
+        "DHT22 raw data: "
+        "%02X %02X %02X %02X %02X\n",
+        data[0],
+        data[1],
+        data[2],
+        data[3],
+        data[4]
+    );
+
     uint8_t checksum =
-        data[0] + data[1] + data[2] + data[3];
+        data[0] +
+        data[1] +
+        data[2] +
+        data[3];
 
     if (checksum != data[4])
+    {
+        safe_printf(
+            "DHT22: Checksum ERROR "
+            "(calculated %02X, received %02X)\n",
+            checksum,
+            data[4]
+        );
+
         return false;
+    }
+
+    int rawHumidity =
+        (data[0] << 8) |
+        data[1];
 
     *humidity =
-        ((data[0] << 8) | data[1]) / 10.0f;
+        rawHumidity / 10.0f;
 
-    int16_t rawTemperature =
-        (data[2] << 8) | data[3];
+    int rawTemperature =
+        (data[2] << 8) |
+        data[3];
 
     if (rawTemperature & 0x8000)
     {
         rawTemperature &= 0x7FFF;
+
         *temperature =
             -(rawTemperature / 10.0f);
     }
@@ -105,21 +180,57 @@ static bool dht_read(float *temperature, float *humidity)
             rawTemperature / 10.0f;
     }
 
+    if (
+        *temperature == 0.0f &&
+        *humidity == 0.0f
+    )
+    {
+        safe_printf(
+            "DHT22: Invalid all-zero reading\n"
+        );
+
+        return false;
+    }
+
+    safe_printf(
+        "DHT22: Temperature = %.2f C, "
+        "Humidity = %.2f %%\n",
+        *temperature,
+        *humidity
+    );
+
+    safe_printf(
+        "DHT22: Read SUCCESS\n"
+    );
+
     return true;
 }
-
 static void ldr_init(void)
 {
+    adc_oneshot_unit_init_cfg_t init_config =
+    {
+        .unit_id = LDR_ADC_UNIT
+    };
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_new_unit(
+            &init_config,
+            &adc_handle
+        )
+    );
+
     adc_oneshot_chan_cfg_t config =
     {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
         .atten = ADC_ATTEN_DB_12
     };
 
-    adc_oneshot_config_channel(
-        adc_handle,
-        LDR_ADC_CHANNEL,
-        &config
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc_handle,
+            LDR_ADC_CHANNEL,
+            &config
+        )
     );
 }
 
