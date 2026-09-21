@@ -2139,7 +2139,7 @@ void app_main(void)
         "InputTask",
         4096,
         NULL,
-        2,
+        3,
         NULL
     );
 }
