@@ -94,12 +94,55 @@ AlarmState evaluateTemperature(float temperature)
 }
 
 /* =========================================================
+   SYSTEM STATE MACHINE - STEP 32
+   ========================================================= */
+
+typedef enum
+{
+    ACTIVE,
+    INACTIVE
+} SystemState;
+
+/*
+ * State transitions required by the laboratory:
+ *
+ * ACTIVE + inactivity timeout -> INACTIVE
+ * INACTIVE + motion detected -> ACTIVE
+ * Otherwise, remain in the current state.
+ */
+SystemState evaluateSystemState(
+    SystemState currentState,
+    bool motionDetected,
+    bool inactivityTimeout
+)
+{
+    if (
+        currentState == ACTIVE &&
+        inactivityTimeout
+    )
+    {
+        return INACTIVE;
+    }
+
+    if (
+        currentState == INACTIVE &&
+        motionDetected
+    )
+    {
+        return ACTIVE;
+    }
+
+    return currentState;
+}
+
+/* =========================================================
    GLOBALS
    ========================================================= */
 
 static QueueHandle_t sensorQueue = NULL;
 static QueueHandle_t displayModeQueue = NULL;
 static QueueHandle_t motionQueue = NULL;
+static QueueHandle_t stateQueue = NULL;
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 
@@ -951,6 +994,9 @@ static void MotionTask(void *pvParameters)
     bool motionDetected = false;
     bool timeoutReported = false;
 
+    SystemState currentState =
+        ACTIVE;
+
     TickType_t lastMotionTime =
         xTaskGetTickCount();
 
@@ -959,6 +1005,16 @@ static void MotionTask(void *pvParameters)
 
     printf(
         "MotionTask started\n"
+    );
+
+    printf(
+        "SystemState: ACTIVE\n"
+    );
+
+    /* Publish the initial state. */
+    xQueueOverwrite(
+        stateQueue,
+        &currentState
     );
 
     while (1)
@@ -987,6 +1043,24 @@ static void MotionTask(void *pvParameters)
              */
             lastMotionTime =
                 xTaskGetTickCount();
+
+            /*
+             * Motion while INACTIVE returns the
+             * system to ACTIVE.
+             */
+            if (currentState == INACTIVE)
+            {
+                currentState =
+                    evaluateSystemState(
+                        currentState,
+                        true,
+                        false
+                    );
+
+                printf(
+                    "SystemState: INACTIVE -> ACTIVE\n"
+                );
+            }
         }
         else
         {
@@ -1001,7 +1075,7 @@ static void MotionTask(void *pvParameters)
 
             /*
              * After 15 seconds without motion,
-             * report the inactivity timeout once.
+             * request the ACTIVE -> INACTIVE transition.
              */
             if (
                 !timeoutReported &&
@@ -1012,24 +1086,44 @@ static void MotionTask(void *pvParameters)
             )
             {
                 timeoutReported = true;
-
                 printf(
                     "MotionTask: NO MOTION - "
                     "15 SECOND TIMEOUT\n"
                 );
+
+                if (currentState == ACTIVE)
+                {
+                    currentState =
+                        evaluateSystemState(
+                            currentState,
+                            false,
+                            true
+                        );
+
+                    printf(
+                        "SystemState: ACTIVE -> INACTIVE\n"
+                    );
+                }
             }
         }
 
         /*
          * Keep the latest motion state available
          * to DisplayTask.
-         *
-         * The queue has length 1, so xQueueOverwrite()
-         * always keeps the newest state.
          */
         xQueueOverwrite(
             motionQueue,
             &motionDetected
+        );
+
+        /*
+         * Publish the current system state.
+         * The queue length is 1, so the newest
+         * state always replaces the previous one.
+         */
+        xQueueOverwrite(
+            stateQueue,
+            &currentState
         );
 
         /*
@@ -1482,6 +1576,38 @@ void app_main(void)
         "============================\n\n"
     );
 
+    /* =====================================================
+       STEP 32 - STATE MACHINE TESTS
+       ===================================================== */
+
+    printf(
+        "===== STATE MACHINE TESTS =====\n"
+    );
+
+    printf(
+        "ACTIVE + no timeout = %d\n",
+        evaluateSystemState(ACTIVE, false, false)
+    );
+
+    printf(
+        "ACTIVE + timeout = %d\n",
+        evaluateSystemState(ACTIVE, false, true)
+    );
+
+    printf(
+        "INACTIVE + no motion = %d\n",
+        evaluateSystemState(INACTIVE, false, false)
+    );
+
+    printf(
+        "INACTIVE + motion = %d\n",
+        evaluateSystemState(INACTIVE, true, false)
+    );
+
+    printf(
+        "===============================\n\n"
+    );
+
     /* Initialize LDR */
 
     ldr_init();
@@ -1612,6 +1738,27 @@ void app_main(void)
 
     printf(
         "Motion Queue created successfully\n"
+    );
+
+    /* Create System State Queue */
+
+    stateQueue =
+        xQueueCreate(
+            1,
+            sizeof(SystemState)
+        );
+
+    if (stateQueue == NULL)
+    {
+        printf(
+            "Failed to create System State Queue\n"
+        );
+
+        return;
+    }
+
+    printf(
+        "System State Queue created successfully\n"
     );
 
     /* Create SensorTask */
