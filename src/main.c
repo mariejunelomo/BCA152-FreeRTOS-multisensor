@@ -18,6 +18,7 @@
    ========================================================= */
 
 #define DHT_PIN             GPIO_NUM_4
+#define PIR_PIN             GPIO_NUM_27
 
 #define LDR_ADC_UNIT        ADC_UNIT_1
 #define LDR_ADC_CHANNEL     ADC_CHANNEL_6
@@ -98,6 +99,7 @@ AlarmState evaluateTemperature(float temperature)
 
 static QueueHandle_t sensorQueue = NULL;
 static QueueHandle_t displayModeQueue = NULL;
+static QueueHandle_t motionQueue = NULL;
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 
@@ -888,10 +890,12 @@ static void SensorTask(void *pvParameters)
         sensorData.lightLevel =
             read_light_level();
 
-        /* Motion will be added later */
-
-        sensorData.motionDetected =
-            false;
+        /*
+         * Motion is monitored by MotionTask.
+         * DisplayTask receives the latest motion state
+         * through motionQueue.
+         */
+        sensorData.motionDetected = false;
 
         printf(
             "Temperature: %.2f C\n",
@@ -933,6 +937,106 @@ static void SensorTask(void *pvParameters)
         vTaskDelayUntil(
             &lastWakeTime,
             pdMS_TO_TICKS(2000)
+        );
+    }
+}
+
+
+/* =========================================================
+   MOTION TASK - STEP 31
+   ========================================================= */
+
+static void MotionTask(void *pvParameters)
+{
+    bool motionDetected = false;
+    bool timeoutReported = false;
+
+    TickType_t lastMotionTime =
+        xTaskGetTickCount();
+
+    const TickType_t inactivityTimeout =
+        pdMS_TO_TICKS(15000);
+
+    printf(
+        "MotionTask started\n"
+    );
+
+    while (1)
+    {
+        int pirLevel =
+            gpio_get_level(PIR_PIN);
+
+        /*
+         * PIR output HIGH means motion is detected.
+         */
+        if (pirLevel == 1)
+        {
+            if (!motionDetected)
+            {
+                printf(
+                    "MotionTask: MOTION DETECTED\n"
+                );
+            }
+
+            motionDetected = true;
+            timeoutReported = false;
+
+            /*
+             * Any detected motion resets the
+             * 15-second inactivity timer.
+             */
+            lastMotionTime =
+                xTaskGetTickCount();
+        }
+        else
+        {
+            if (motionDetected)
+            {
+                printf(
+                    "MotionTask: NO MOTION\n"
+                );
+            }
+
+            motionDetected = false;
+
+            /*
+             * After 15 seconds without motion,
+             * report the inactivity timeout once.
+             */
+            if (
+                !timeoutReported &&
+                (
+                    xTaskGetTickCount() -
+                    lastMotionTime
+                ) >= inactivityTimeout
+            )
+            {
+                timeoutReported = true;
+
+                printf(
+                    "MotionTask: NO MOTION - "
+                    "15 SECOND TIMEOUT\n"
+                );
+            }
+        }
+
+        /*
+         * Keep the latest motion state available
+         * to DisplayTask.
+         *
+         * The queue has length 1, so xQueueOverwrite()
+         * always keeps the newest state.
+         */
+        xQueueOverwrite(
+            motionQueue,
+            &motionDetected
+        );
+
+        /*
+         * Poll the PIR without busy-looping.
+         */
+        vTaskDelay(
+            pdMS_TO_TICKS(100)
         );
     }
 }
@@ -1102,6 +1206,23 @@ static void DisplayTask(void *pvParameters)
         }
 
         /*
+         * Receive the latest motion state from MotionTask.
+         */
+        bool motionState;
+
+        while (
+            xQueueReceive(
+                motionQueue,
+                &motionState,
+                0
+            ) == pdPASS
+        )
+        {
+            sensorData.motionDetected =
+                motionState;
+        }
+
+        /*
          * Receive sensor information.
          */
 
@@ -1127,6 +1248,22 @@ static void DisplayTask(void *pvParameters)
             {
                 currentMode =
                     newMode;
+            }
+
+            /*
+             * Check for the newest motion state.
+             * MotionTask owns the PIR input.
+             */
+            while (
+                xQueueReceive(
+                    motionQueue,
+                    &motionState,
+                    0
+                ) == pdPASS
+            )
+            {
+                sensorData.motionDetected =
+                    motionState;
             }
 
             oled_clear();
@@ -1388,6 +1525,32 @@ void app_main(void)
         )
     );
 
+    /* Configure PIR motion sensor */
+
+    gpio_config_t pir_config =
+    {
+        .pin_bit_mask =
+            (1ULL << PIR_PIN),
+
+        .mode =
+            GPIO_MODE_INPUT,
+
+        .pull_up_en =
+            GPIO_PULLUP_DISABLE,
+
+        .pull_down_en =
+            GPIO_PULLDOWN_DISABLE,
+
+        .intr_type =
+            GPIO_INTR_DISABLE
+    };
+
+    ESP_ERROR_CHECK(
+        gpio_config(
+            &pir_config
+        )
+    );
+
     /* Create Sensor Queue */
 
     sensorQueue =
@@ -1430,6 +1593,27 @@ void app_main(void)
         "Display Mode Queue created successfully\n"
     );
 
+    /* Create Motion Queue */
+
+    motionQueue =
+        xQueueCreate(
+            1,
+            sizeof(bool)
+        );
+
+    if (motionQueue == NULL)
+    {
+        printf(
+            "Failed to create Motion Queue\n"
+        );
+
+        return;
+    }
+
+    printf(
+        "Motion Queue created successfully\n"
+    );
+
     /* Create SensorTask */
 
     xTaskCreate(
@@ -1438,6 +1622,17 @@ void app_main(void)
         4096,
         NULL,
         2,
+        NULL
+    );
+
+    /* Create MotionTask */
+
+    xTaskCreate(
+        MotionTask,
+        "MotionTask",
+        4096,
+        NULL,
+        3,
         NULL
     );
 
