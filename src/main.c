@@ -30,7 +30,6 @@
 #define OLED_WIDTH          128
 #define OLED_HEIGHT         64
 
-/* Rotary Encoder */
 #define ENCODER_CLK_PIN     GPIO_NUM_32
 #define ENCODER_DT_PIN      GPIO_NUM_33
 #define ENCODER_SW_PIN      GPIO_NUM_25
@@ -71,13 +70,11 @@ typedef enum
 } AlarmState;
 
 /*
- * Step 30:
- * Pure temperature decision logic.
- *
  * Below 18 C  -> LOW_TEMPERATURE
  * 18 to 30 C  -> NORMAL
  * Above 30 C  -> HIGH_TEMPERATURE
  */
+
 AlarmState evaluateTemperature(float temperature)
 {
     if (temperature < 18.0f)
@@ -94,7 +91,7 @@ AlarmState evaluateTemperature(float temperature)
 }
 
 /* =========================================================
-   SYSTEM STATE MACHINE - STEP 32
+   SYSTEM STATE
    ========================================================= */
 
 typedef enum
@@ -104,30 +101,22 @@ typedef enum
 } SystemState;
 
 /*
- * State transitions required by the laboratory:
- *
- * ACTIVE + inactivity timeout -> INACTIVE
- * INACTIVE + motion detected -> ACTIVE
- * Otherwise, remain in the current state.
+ * ACTIVE -> INACTIVE after inactivity timeout.
+ * INACTIVE -> ACTIVE when motion is detected.
  */
+
 SystemState evaluateSystemState(
     SystemState currentState,
     bool motionDetected,
     bool inactivityTimeout
 )
 {
-    if (
-        currentState == ACTIVE &&
-        inactivityTimeout
-    )
+    if (currentState == ACTIVE && inactivityTimeout)
     {
         return INACTIVE;
     }
 
-    if (
-        currentState == INACTIVE &&
-        motionDetected
-    )
+    if (currentState == INACTIVE && motionDetected)
     {
         return ACTIVE;
     }
@@ -261,14 +250,24 @@ static void oled_clear(void)
     {
         oled_set_cursor(page, 0);
 
-        for (
-            uint8_t column = 0;
-            column < OLED_WIDTH;
-            column++
-        )
+        for (uint8_t column = 0;
+             column < OLED_WIDTH;
+             column++)
         {
             oled_data(0x00);
         }
+    }
+}
+
+static void oled_set_power(bool enabled)
+{
+    if (enabled)
+    {
+        oled_command(0xAF);
+    }
+    else
+    {
+        oled_command(0xAE);
     }
 }
 
@@ -286,8 +285,6 @@ static void oled_write_char(
 
     switch (c)
     {
-        /* Letters */
-
         case 'A':
             pixels[0] = 0x7E;
             pixels[1] = 0x09;
@@ -416,8 +413,6 @@ static void oled_write_char(
             pixels[4] = 0x03;
             break;
 
-        /* Numbers */
-
         case '0':
             pixels[0] = 0x3E;
             pixels[1] = 0x51;
@@ -498,8 +493,6 @@ static void oled_write_char(
             pixels[4] = 0x1E;
             break;
 
-        /* Symbols */
-
         case '.':
             pixels[2] = 0x60;
             pixels[3] = 0x60;
@@ -564,10 +557,7 @@ static bool dht22_read(
     float *humidity
 )
 {
-    uint8_t data[5] =
-    {
-        0, 0, 0, 0, 0
-    };
+    uint8_t data[5] = {0, 0, 0, 0, 0};
 
     printf("DHT22: Starting read...\n");
 
@@ -934,10 +924,11 @@ static void SensorTask(void *pvParameters)
             read_light_level();
 
         /*
-         * Motion is monitored by MotionTask.
-         * DisplayTask receives the latest motion state
-         * through motionQueue.
+         * Motion is owned by MotionTask.
+         * DisplayTask gets the latest motion
+         * state from motionQueue.
          */
+
         sensorData.motionDetected = false;
 
         printf(
@@ -975,7 +966,12 @@ static void SensorTask(void *pvParameters)
             "SensorTask waiting 2 sec\n"
         );
 
-        /* Periodic execution */
+        /*
+         * Periodic execution.
+         *
+         * This satisfies the laboratory requirement
+         * to use vTaskDelayUntil().
+         */
 
         vTaskDelayUntil(
             &lastWakeTime,
@@ -984,9 +980,8 @@ static void SensorTask(void *pvParameters)
     }
 }
 
-
 /* =========================================================
-   MOTION TASK - STEP 31
+   MOTION TASK - STEP 31 + STEP 32/34 STATE MACHINE
    ========================================================= */
 
 static void MotionTask(void *pvParameters)
@@ -1007,11 +1002,10 @@ static void MotionTask(void *pvParameters)
         "MotionTask started\n"
     );
 
-    printf(
-        "SystemState: ACTIVE\n"
-    );
+    /*
+     * Publish the initial ACTIVE state.
+     */
 
-    /* Publish the initial state. */
     xQueueOverwrite(
         stateQueue,
         &currentState
@@ -1023,8 +1017,9 @@ static void MotionTask(void *pvParameters)
             gpio_get_level(PIR_PIN);
 
         /*
-         * PIR output HIGH means motion is detected.
+         * PIR HIGH means motion detected.
          */
+
         if (pirLevel == 1)
         {
             if (!motionDetected)
@@ -1035,21 +1030,31 @@ static void MotionTask(void *pvParameters)
             }
 
             motionDetected = true;
+
+            /*
+             * Allow another inactivity timeout
+             * after motion stops.
+             */
+
             timeoutReported = false;
 
             /*
-             * Any detected motion resets the
-             * 15-second inactivity timer.
+             * Reset the inactivity timer.
              */
+
             lastMotionTime =
                 xTaskGetTickCount();
 
             /*
-             * Motion while INACTIVE returns the
-             * system to ACTIVE.
+             * If the system is currently INACTIVE,
+             * motion changes it back to ACTIVE.
              */
+
             if (currentState == INACTIVE)
             {
+                SystemState previousState =
+                    currentState;
+
                 currentState =
                     evaluateSystemState(
                         currentState,
@@ -1057,9 +1062,18 @@ static void MotionTask(void *pvParameters)
                         false
                     );
 
-                printf(
-                    "SystemState: INACTIVE -> ACTIVE\n"
-                );
+                if (currentState != previousState)
+                {
+                    printf(
+                        "SystemState: "
+                        "INACTIVE -> ACTIVE\n"
+                    );
+
+                    xQueueOverwrite(
+                        stateQueue,
+                        &currentState
+                    );
+                }
             }
         }
         else
@@ -1074,25 +1088,38 @@ static void MotionTask(void *pvParameters)
             motionDetected = false;
 
             /*
-             * After 15 seconds without motion,
-             * request the ACTIVE -> INACTIVE transition.
+             * Check whether 15 seconds have passed
+             * without motion.
              */
-            if (
-                !timeoutReported &&
+
+            bool inactivityTimeoutReached =
                 (
-                    xTaskGetTickCount() -
-                    lastMotionTime
-                ) >= inactivityTimeout
-            )
+                    !timeoutReported &&
+                    (
+                        xTaskGetTickCount() -
+                        lastMotionTime
+                    ) >= inactivityTimeout
+                );
+
+            if (inactivityTimeoutReached)
             {
                 timeoutReported = true;
+
                 printf(
-                    "MotionTask: NO MOTION - "
+                    "MotionTask: "
+                    "NO MOTION - "
                     "15 SECOND TIMEOUT\n"
                 );
 
+                /*
+                 * ACTIVE -> INACTIVE
+                 */
+
                 if (currentState == ACTIVE)
                 {
+                    SystemState previousState =
+                        currentState;
+
                     currentState =
                         evaluateSystemState(
                             currentState,
@@ -1100,9 +1127,18 @@ static void MotionTask(void *pvParameters)
                             true
                         );
 
-                    printf(
-                        "SystemState: ACTIVE -> INACTIVE\n"
-                    );
+                    if (currentState != previousState)
+                    {
+                        printf(
+                            "SystemState: "
+                            "ACTIVE -> INACTIVE\n"
+                        );
+
+                        xQueueOverwrite(
+                            stateQueue,
+                            &currentState
+                        );
+                    }
                 }
             }
         }
@@ -1111,24 +1147,17 @@ static void MotionTask(void *pvParameters)
          * Keep the latest motion state available
          * to DisplayTask.
          */
+
         xQueueOverwrite(
             motionQueue,
             &motionDetected
         );
 
         /*
-         * Publish the current system state.
-         * The queue length is 1, so the newest
-         * state always replaces the previous one.
+         * Poll PIR every 100 ms.
+         * This prevents a busy loop.
          */
-        xQueueOverwrite(
-            stateQueue,
-            &currentState
-        );
 
-        /*
-         * Poll the PIR without busy-looping.
-         */
         vTaskDelay(
             pdMS_TO_TICKS(100)
         );
@@ -1145,7 +1174,9 @@ static void InputTask(void *pvParameters)
         TEMPERATURE;
 
     int lastCLK =
-        gpio_get_level(ENCODER_CLK_PIN);
+        gpio_get_level(
+            ENCODER_CLK_PIN
+        );
 
     printf(
         "InputTask started\n"
@@ -1158,10 +1189,12 @@ static void InputTask(void *pvParameters)
     while (1)
     {
         int currentCLK =
-            gpio_get_level(ENCODER_CLK_PIN);
+            gpio_get_level(
+                ENCODER_CLK_PIN
+            );
 
         /*
-         * Detect a falling edge on CLK.
+         * Detect falling edge on CLK.
          */
 
         if (
@@ -1170,7 +1203,9 @@ static void InputTask(void *pvParameters)
         )
         {
             int currentDT =
-                gpio_get_level(ENCODER_DT_PIN);
+                gpio_get_level(
+                    ENCODER_DT_PIN
+                );
 
             /*
              * Determine direction.
@@ -1221,13 +1256,13 @@ static void InputTask(void *pvParameters)
             );
 
             printf(
-                "InputTask: DisplayMode changed to %d\n",
+                "InputTask: "
+                "DisplayMode changed to %d\n",
                 currentMode
             );
 
             /*
-             * Prevent rapid repeated
-             * encoder events.
+             * Encoder debounce.
              */
 
             vTaskDelay(
@@ -1239,8 +1274,7 @@ static void InputTask(void *pvParameters)
             currentCLK;
 
         /*
-         * The encoder switch is not used yet.
-         * It can be integrated later.
+         * Poll encoder every 10 ms.
          */
 
         vTaskDelay(
@@ -1255,10 +1289,18 @@ static void InputTask(void *pvParameters)
 
 static void DisplayTask(void *pvParameters)
 {
-    SensorData sensorData;
+    SensorData sensorData =
+    {
+        0
+    };
 
     DisplayMode currentMode =
         TEMPERATURE;
+
+    SystemState currentState =
+        ACTIVE;
+
+    bool oledEnabled = true;
 
     printf(
         "DisplayTask started\n"
@@ -1272,11 +1314,110 @@ static void DisplayTask(void *pvParameters)
 
     oled_clear();
 
+    oled_set_power(true);
+
     while (1)
     {
         /*
-         * Check whether InputTask
-         * selected another display page.
+         * Receive the latest system state.
+         */
+
+        SystemState newState;
+
+        while (
+            xQueueReceive(
+                stateQueue,
+                &newState,
+                0
+            ) == pdPASS
+        )
+        {
+            if (newState != currentState)
+            {
+                currentState =
+                    newState;
+
+                if (currentState == INACTIVE)
+                {
+                    /*
+                     * Turn OLED off.
+                     */
+
+                    oled_clear();
+
+                    oled_set_power(false);
+
+                    oledEnabled = false;
+
+                    printf(
+                        "DisplayTask: "
+                        "OLED OFF - "
+                        "system INACTIVE\n"
+                    );
+                }
+                else
+                {
+                    /*
+                     * Restore OLED.
+                     */
+
+                    oled_set_power(true);
+
+                    oledEnabled = true;
+
+                    printf(
+                        "DisplayTask: "
+                        "OLED ON - "
+                        "system ACTIVE\n"
+                    );
+                }
+            }
+        }
+
+        /*
+         * INACTIVE:
+         *
+         * Keep DisplayTask alive so that it can
+         * receive the ACTIVE state later.
+         *
+         * Drain sensor data so SensorTask's queue
+         * does not remain permanently full.
+         */
+
+        if (currentState == INACTIVE)
+        {
+            SensorData discardedData;
+
+            while (
+                xQueueReceive(
+                    sensorQueue,
+                    &discardedData,
+                    0
+                ) == pdPASS
+            )
+            {
+                /*
+                 * Intentionally discard sensor data
+                 * while the display is inactive.
+                 */
+            }
+
+            /*
+             * MotionTask remains active independently.
+             */
+
+            vTaskDelay(
+                pdMS_TO_TICKS(100)
+            );
+
+            continue;
+        }
+
+        /*
+         * ACTIVE:
+         *
+         * Check whether InputTask selected
+         * another display page.
          */
 
         DisplayMode newMode;
@@ -1300,8 +1441,9 @@ static void DisplayTask(void *pvParameters)
         }
 
         /*
-         * Receive the latest motion state from MotionTask.
+         * Receive latest motion state.
          */
+
         bool motionState;
 
         while (
@@ -1329,7 +1471,7 @@ static void DisplayTask(void *pvParameters)
         )
         {
             /*
-             * Check for a newer display mode.
+             * Check for newer display mode.
              */
 
             while (
@@ -1345,9 +1487,9 @@ static void DisplayTask(void *pvParameters)
             }
 
             /*
-             * Check for the newest motion state.
-             * MotionTask owns the PIR input.
+             * Check for newest motion state.
              */
+
             while (
                 xQueueReceive(
                     motionQueue,
@@ -1360,154 +1502,166 @@ static void DisplayTask(void *pvParameters)
                     motionState;
             }
 
-            oled_clear();
-
             /*
-             * Display title.
+             * Update OLED only while ACTIVE.
              */
 
-            oled_write_string(
-                0,
-                28,
-                "ROOM MONITOR"
-            );
-
-            /*
-             * Display selected measurement.
-             */
-
-            switch (currentMode)
+            if (
+                oledEnabled &&
+                currentState == ACTIVE
+            )
             {
-                case TEMPERATURE:
+                oled_clear();
+
+                /*
+                 * Title
+                 */
+
+                oled_write_string(
+                    0,
+                    28,
+                    "ROOM MONITOR"
+                );
+
+                /*
+                 * Selected measurement
+                 */
+
+                switch (currentMode)
                 {
-                    char temperatureText[16];
-
-                    oled_write_string(
-                        2,
-                        20,
-                        "TEMPERATURE"
-                    );
-
-                    snprintf(
-                        temperatureText,
-                        sizeof(temperatureText),
-                        "%.1f C",
-                        sensorData.temperature
-                    );
-
-                    oled_write_string(
-                        4,
-                        40,
-                        temperatureText
-                    );
-
-                    printf(
-                        "DisplayTask: "
-                        "Temperature page = %.2f C\n",
-                        sensorData.temperature
-                    );
-
-                    break;
-                }
-
-                case HUMIDITY:
-                {
-                    char humidityText[16];
-
-                    oled_write_string(
-                        2,
-                        34,
-                        "HUMIDITY"
-                    );
-
-                    snprintf(
-                        humidityText,
-                        sizeof(humidityText),
-                        "%.1f %%",
-                        sensorData.humidity
-                    );
-
-                    oled_write_string(
-                        4,
-                        40,
-                        humidityText
-                    );
-
-                    printf(
-                        "DisplayTask: "
-                        "Humidity page = %.2f %%\n",
-                        sensorData.humidity
-                    );
-
-                    break;
-                }
-
-                case LIGHT:
-                {
-                    char lightText[16];
-
-                    oled_write_string(
-                        2,
-                        46,
-                        "LIGHT"
-                    );
-
-                    snprintf(
-                        lightText,
-                        sizeof(lightText),
-                        "%d %%",
-                        sensorData.lightLevel
-                    );
-
-                    oled_write_string(
-                        4,
-                        40,
-                        lightText
-                    );
-
-                    printf(
-                        "DisplayTask: "
-                        "Light page = %d %%\n",
-                        sensorData.lightLevel
-                    );
-
-                    break;
-                }
-
-                case MOTION:
-                {
-                    oled_write_string(
-                        2,
-                        40,
-                        "MOTION"
-                    );
-
-                    if (
-                        sensorData.motionDetected
-                    )
+                    case TEMPERATURE:
                     {
+                        char temperatureText[16];
+
+                        oled_write_string(
+                            2,
+                            20,
+                            "TEMPERATURE"
+                        );
+
+                        snprintf(
+                            temperatureText,
+                            sizeof(temperatureText),
+                            "%.1f C",
+                            sensorData.temperature
+                        );
+
                         oled_write_string(
                             4,
                             40,
-                            "1"
+                            temperatureText
                         );
+
+                        printf(
+                            "DisplayTask: "
+                            "Temperature page = "
+                            "%.2f C\n",
+                            sensorData.temperature
+                        );
+
+                        break;
                     }
-                    else
+
+                    case HUMIDITY:
                     {
+                        char humidityText[16];
+
+                        oled_write_string(
+                            2,
+                            34,
+                            "HUMIDITY"
+                        );
+
+                        snprintf(
+                            humidityText,
+                            sizeof(humidityText),
+                            "%.1f %%",
+                            sensorData.humidity
+                        );
+
                         oled_write_string(
                             4,
                             40,
-                            "0"
+                            humidityText
                         );
+
+                        printf(
+                            "DisplayTask: "
+                            "Humidity page = "
+                            "%.2f %%\n",
+                            sensorData.humidity
+                        );
+
+                        break;
                     }
 
-                    printf(
-                        "DisplayTask: "
-                        "Motion page = %d\n",
-                        sensorData.motionDetected
-                    );
+                    case LIGHT:
+                    {
+                        char lightText[16];
 
-                    break;
+                        oled_write_string(
+                            2,
+                            46,
+                            "LIGHT"
+                        );
+
+                        snprintf(
+                            lightText,
+                            sizeof(lightText),
+                            "%d %%",
+                            sensorData.lightLevel
+                        );
+
+                        oled_write_string(
+                            4,
+                            40,
+                            lightText
+                        );
+
+                        printf(
+                            "DisplayTask: "
+                            "Light page = "
+                            "%d %%\n",
+                            sensorData.lightLevel
+                        );
+
+                        break;
+                    }
+
+                    case MOTION:
+                    {
+                        oled_write_string(
+                            2,
+                            40,
+                            "MOTION"
+                        );
+
+                        if (sensorData.motionDetected)
+                        {
+                            oled_write_string(
+                                4,
+                                40,
+                                "1"
+                            );
+                        }
+                        else
+                        {
+                            oled_write_string(
+                                4,
+                                40,
+                                "0"
+                            );
+                        }
+
+                        printf(
+                            "DisplayTask: "
+                            "Motion page = "
+                            "%d\n",
+                            sensorData.motionDetected
+                        );
+
+                        break;
+                    }
                 }
             }
         }
@@ -1576,38 +1730,6 @@ void app_main(void)
         "============================\n\n"
     );
 
-    /* =====================================================
-       STEP 32 - STATE MACHINE TESTS
-       ===================================================== */
-
-    printf(
-        "===== STATE MACHINE TESTS =====\n"
-    );
-
-    printf(
-        "ACTIVE + no timeout = %d\n",
-        evaluateSystemState(ACTIVE, false, false)
-    );
-
-    printf(
-        "ACTIVE + timeout = %d\n",
-        evaluateSystemState(ACTIVE, false, true)
-    );
-
-    printf(
-        "INACTIVE + no motion = %d\n",
-        evaluateSystemState(INACTIVE, false, false)
-    );
-
-    printf(
-        "INACTIVE + motion = %d\n",
-        evaluateSystemState(INACTIVE, true, false)
-    );
-
-    printf(
-        "===============================\n\n"
-    );
-
     /* Initialize LDR */
 
     ldr_init();
@@ -1651,7 +1773,7 @@ void app_main(void)
         )
     );
 
-    /* Configure PIR motion sensor */
+    /* Configure PIR */
 
     gpio_config_t pir_config =
     {
@@ -1677,7 +1799,9 @@ void app_main(void)
         )
     );
 
-    /* Create Sensor Queue */
+    /* =====================================================
+       CREATE SENSOR QUEUE
+       ===================================================== */
 
     sensorQueue =
         xQueueCreate(
@@ -1698,7 +1822,9 @@ void app_main(void)
         "Sensor Queue created successfully\n"
     );
 
-    /* Create Display Mode Queue */
+    /* =====================================================
+       CREATE DISPLAY MODE QUEUE
+       ===================================================== */
 
     displayModeQueue =
         xQueueCreate(
@@ -1719,7 +1845,9 @@ void app_main(void)
         "Display Mode Queue created successfully\n"
     );
 
-    /* Create Motion Queue */
+    /* =====================================================
+       CREATE MOTION QUEUE
+       ===================================================== */
 
     motionQueue =
         xQueueCreate(
@@ -1740,7 +1868,9 @@ void app_main(void)
         "Motion Queue created successfully\n"
     );
 
-    /* Create System State Queue */
+    /* =====================================================
+       CREATE SYSTEM STATE QUEUE
+       ===================================================== */
 
     stateQueue =
         xQueueCreate(
@@ -1761,7 +1891,9 @@ void app_main(void)
         "System State Queue created successfully\n"
     );
 
-    /* Create SensorTask */
+    /* =====================================================
+       CREATE FREERTOS TASKS
+       ===================================================== */
 
     xTaskCreate(
         SensorTask,
@@ -1772,8 +1904,6 @@ void app_main(void)
         NULL
     );
 
-    /* Create MotionTask */
-
     xTaskCreate(
         MotionTask,
         "MotionTask",
@@ -1783,8 +1913,6 @@ void app_main(void)
         NULL
     );
 
-    /* Create DisplayTask */
-
     xTaskCreate(
         DisplayTask,
         "DisplayTask",
@@ -1793,8 +1921,6 @@ void app_main(void)
         1,
         NULL
     );
-
-    /* Create InputTask */
 
     xTaskCreate(
         InputTask,
