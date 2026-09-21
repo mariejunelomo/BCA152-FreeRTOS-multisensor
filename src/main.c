@@ -59,6 +59,40 @@ typedef struct
 } SensorData;
 
 /* =========================================================
+   ALARM STATE / TEMPERATURE DECISION LOGIC
+   ========================================================= */
+
+typedef enum
+{
+    NORMAL,
+    LOW_TEMPERATURE,
+    HIGH_TEMPERATURE
+} AlarmState;
+
+/*
+ * Step 30:
+ * Pure temperature decision logic.
+ *
+ * Below 18 C  -> LOW_TEMPERATURE
+ * 18 to 30 C  -> NORMAL
+ * Above 30 C  -> HIGH_TEMPERATURE
+ */
+AlarmState evaluateTemperature(float temperature)
+{
+    if (temperature < 18.0f)
+    {
+        return LOW_TEMPERATURE;
+    }
+
+    if (temperature > 30.0f)
+    {
+        return HIGH_TEMPERATURE;
+    }
+
+    return NORMAL;
+}
+
+/* =========================================================
    GLOBALS
    ========================================================= */
 
@@ -978,7 +1012,7 @@ static void InputTask(void *pvParameters)
             }
 
             /*
-             * Send the selected mode
+             * Send selected mode
              * to DisplayTask.
              */
 
@@ -993,8 +1027,14 @@ static void InputTask(void *pvParameters)
                 currentMode
             );
 
-            /* Small debounce/yield after a detected encoder step. */
-            vTaskDelay(pdMS_TO_TICKS(20));
+            /*
+             * Prevent rapid repeated
+             * encoder events.
+             */
+
+            vTaskDelay(
+                pdMS_TO_TICKS(20)
+            );
         }
 
         lastCLK =
@@ -1002,7 +1042,7 @@ static void InputTask(void *pvParameters)
 
         /*
          * The encoder switch is not used yet.
-         * It can be integrated later if needed.
+         * It can be integrated later.
          */
 
         vTaskDelay(
@@ -1241,9 +1281,14 @@ static void DisplayTask(void *pvParameters)
             }
         }
 
-        /* Prevent DisplayTask from continuously consuming CPU
-           when there is no new sensor data or mode change. */
-        vTaskDelay(pdMS_TO_TICKS(20));
+        /*
+         * Prevent DisplayTask from continuously
+         * consuming CPU.
+         */
+
+        vTaskDelay(
+            pdMS_TO_TICKS(20)
+        );
     }
 }
 
@@ -1263,26 +1308,59 @@ void app_main(void)
         "System starting...\n"
     );
 
-    /*
-     * Initialize LDR.
-     */
+    /* =====================================================
+       STEP 30 - ALARM LOGIC TESTS
+       ===================================================== */
+
+    printf(
+        "\n===== ALARM LOGIC TESTS =====\n"
+    );
+
+    printf(
+        "Alarm Test 17.9 C = %d\n",
+        evaluateTemperature(17.9f)
+    );
+
+    printf(
+        "Alarm Test 18.0 C = %d\n",
+        evaluateTemperature(18.0f)
+    );
+
+    printf(
+        "Alarm Test 24.0 C = %d\n",
+        evaluateTemperature(24.0f)
+    );
+
+    printf(
+        "Alarm Test 30.0 C = %d\n",
+        evaluateTemperature(30.0f)
+    );
+
+    printf(
+        "Alarm Test 30.1 C = %d\n",
+        evaluateTemperature(30.1f)
+    );
+
+    printf(
+        "============================\n\n"
+    );
+
+    /* Initialize LDR */
 
     ldr_init();
 
-    /*
-     * Configure DHT22.
-     */
+    /* Configure DHT22 */
 
     gpio_set_direction(
         DHT_PIN,
         GPIO_MODE_INPUT
     );
 
-    gpio_pullup_en(DHT_PIN);
+    gpio_pullup_en(
+        DHT_PIN
+    );
 
-    /*
-     * Configure rotary encoder.
-     */
+    /* Configure rotary encoder */
 
     gpio_config_t encoder_config =
     {
@@ -1310,9 +1388,7 @@ void app_main(void)
         )
     );
 
-    /*
-     * Create Sensor Queue.
-     */
+    /* Create Sensor Queue */
 
     sensorQueue =
         xQueueCreate(
@@ -1333,9 +1409,7 @@ void app_main(void)
         "Sensor Queue created successfully\n"
     );
 
-    /*
-     * Create Display Mode Queue.
-     */
+    /* Create Display Mode Queue */
 
     displayModeQueue =
         xQueueCreate(
@@ -1356,11 +1430,7 @@ void app_main(void)
         "Display Mode Queue created successfully\n"
     );
 
-    /*
-     * Create SensorTask.
-     *
-     * Priority = 2
-     */
+    /* Create SensorTask */
 
     xTaskCreate(
         SensorTask,
@@ -1371,11 +1441,7 @@ void app_main(void)
         NULL
     );
 
-    /*
-     * Create DisplayTask.
-     *
-     * Priority = 1
-     */
+    /* Create DisplayTask */
 
     xTaskCreate(
         DisplayTask,
@@ -1386,14 +1452,7 @@ void app_main(void)
         NULL
     );
 
-    /*
-     * Create InputTask.
-     *
-     * Priority = 2
-     *
-     * Keep the encoder task responsive while allowing the
-     * sensor task and display task to run normally.
-     */
+    /* Create InputTask */
 
     xTaskCreate(
         InputTask,
