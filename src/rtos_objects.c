@@ -9,6 +9,8 @@ EventGroupHandle_t systemEventGroup = NULL;
 
 SemaphoreHandle_t serialMutex = NULL;
 
+adc_oneshot_unit_handle_t adc_handle = NULL;
+
 void safe_printf(const char *format, ...)
 {
     va_list args;
