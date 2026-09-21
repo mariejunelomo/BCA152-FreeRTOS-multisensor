@@ -1,11 +1,13 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 
 #include "driver/gpio.h"
 #include "driver/i2c.h"
@@ -63,6 +65,51 @@
  */
 
 /* =========================================================
+   STEP 36 - SERIAL MUTEX
+   ========================================================= */
+
+/*
+ * Serial output is a shared resource because multiple
+ * FreeRTOS tasks use printf().
+ *
+ * The mutex prevents multiple tasks from writing to the
+ * Serial output at the same time.
+ */
+
+static SemaphoreHandle_t serialMutex = NULL;
+
+/*
+ * Thread-safe printf wrapper.
+ *
+ * xSemaphoreTake() locks the Serial resource.
+ * vprintf() performs the actual formatted output.
+ * xSemaphoreGive() releases the Serial resource.
+ */
+
+static void safe_printf(const char *format, ...)
+{
+    if (serialMutex != NULL)
+    {
+        xSemaphoreTake(
+            serialMutex,
+            portMAX_DELAY
+        );
+    }
+
+    va_list args;
+    va_start(args, format);
+
+    vprintf(format, args);
+
+    va_end(args);
+
+    if (serialMutex != NULL)
+    {
+        xSemaphoreGive(serialMutex);
+    }
+}
+
+/* =========================================================
    DISPLAY MODE
    ========================================================= */
 
@@ -87,7 +134,7 @@ typedef struct
 } SensorData;
 
 /* =========================================================
-   ALARM STATE / TEMPERATURE DECISION LOGIC
+   ALARM STATE
    ========================================================= */
 
 typedef enum
@@ -96,12 +143,6 @@ typedef enum
     LOW_TEMPERATURE,
     HIGH_TEMPERATURE
 } AlarmState;
-
-/*
- * Below 18 C  -> LOW_TEMPERATURE
- * 18 to 30 C  -> NORMAL
- * Above 30 C  -> HIGH_TEMPERATURE
- */
 
 AlarmState evaluateTemperature(float temperature)
 {
@@ -128,23 +169,24 @@ typedef enum
     INACTIVE
 } SystemState;
 
-/*
- * ACTIVE -> INACTIVE after inactivity timeout.
- * INACTIVE -> ACTIVE when motion is detected.
- */
-
 SystemState evaluateSystemState(
     SystemState currentState,
     bool motionDetected,
     bool inactivityTimeout
 )
 {
-    if (currentState == ACTIVE && inactivityTimeout)
+    if (
+        currentState == ACTIVE &&
+        inactivityTimeout
+    )
     {
         return INACTIVE;
     }
 
-    if (currentState == INACTIVE && motionDetected)
+    if (
+        currentState == INACTIVE &&
+        motionDetected
+    )
     {
         return ACTIVE;
     }
@@ -153,7 +195,7 @@ SystemState evaluateSystemState(
 }
 
 /* =========================================================
-   GLOBALS
+   GLOBAL QUEUES / EVENT GROUP
    ========================================================= */
 
 static QueueHandle_t sensorQueue = NULL;
@@ -232,7 +274,9 @@ static void oled_init(void)
         )
     );
 
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(
+        pdMS_TO_TICKS(100)
+    );
 
     oled_command(0xAE);
     oled_command(0x20);
@@ -269,20 +313,37 @@ static void oled_set_cursor(
     uint8_t column
 )
 {
-    oled_command(0xB0 + page);
-    oled_command(0x00 + (column & 0x0F));
-    oled_command(0x10 + ((column >> 4) & 0x0F));
+    oled_command(
+        0xB0 + page
+    );
+
+    oled_command(
+        0x00 + (column & 0x0F)
+    );
+
+    oled_command(
+        0x10 + ((column >> 4) & 0x0F)
+    );
 }
 
 static void oled_clear(void)
 {
-    for (uint8_t page = 0; page < 8; page++)
+    for (
+        uint8_t page = 0;
+        page < 8;
+        page++
+    )
     {
-        oled_set_cursor(page, 0);
+        oled_set_cursor(
+            page,
+            0
+        );
 
-        for (uint8_t column = 0;
-             column < OLED_WIDTH;
-             column++)
+        for (
+            uint8_t column = 0;
+            column < OLED_WIDTH;
+            column++
+        )
         {
             oled_data(0x00);
         }
@@ -549,7 +610,10 @@ static void oled_write_char(
             break;
     }
 
-    oled_set_cursor(page, column);
+    oled_set_cursor(
+        page,
+        column
+    );
 
     for (int i = 0; i < 5; i++)
     {
@@ -587,9 +651,18 @@ static bool dht22_read(
     float *humidity
 )
 {
-    uint8_t data[5] = {0, 0, 0, 0, 0};
+    uint8_t data[5] =
+    {
+        0,
+        0,
+        0,
+        0,
+        0
+    };
 
-    printf("DHT22: Starting read...\n");
+    safe_printf(
+        "DHT22: Starting read...\n"
+    );
 
     gpio_set_direction(
         DHT_PIN,
@@ -617,18 +690,19 @@ static bool dht22_read(
 
     gpio_pullup_en(DHT_PIN);
 
-    /* Wait for DHT22 response LOW */
-
     int64_t start =
         esp_timer_get_time();
 
-    while (gpio_get_level(DHT_PIN) == 1)
+    while (
+        gpio_get_level(DHT_PIN) == 1
+    )
     {
         if (
-            esp_timer_get_time() - start > 100
+            esp_timer_get_time() -
+            start > 100
         )
         {
-            printf(
+            safe_printf(
                 "DHT22: Response LOW timeout\n"
             );
 
@@ -636,18 +710,19 @@ static bool dht22_read(
         }
     }
 
-    /* Wait for DHT22 response HIGH */
-
     start =
         esp_timer_get_time();
 
-    while (gpio_get_level(DHT_PIN) == 0)
+    while (
+        gpio_get_level(DHT_PIN) == 0
+    )
     {
         if (
-            esp_timer_get_time() - start > 100
+            esp_timer_get_time() -
+            start > 100
         )
         {
-            printf(
+            safe_printf(
                 "DHT22: Response HIGH timeout\n"
             );
 
@@ -655,18 +730,19 @@ static bool dht22_read(
         }
     }
 
-    /* Wait for response HIGH to finish */
-
     start =
         esp_timer_get_time();
 
-    while (gpio_get_level(DHT_PIN) == 1)
+    while (
+        gpio_get_level(DHT_PIN) == 1
+    )
     {
         if (
-            esp_timer_get_time() - start > 100
+            esp_timer_get_time() -
+            start > 100
         )
         {
-            printf(
+            safe_printf(
                 "DHT22: Response DATA timeout\n"
             );
 
@@ -674,22 +750,21 @@ static bool dht22_read(
         }
     }
 
-    /* Read 40 bits */
-
     for (int i = 0; i < 40; i++)
     {
-        /* Wait for beginning of HIGH pulse */
-
         start =
             esp_timer_get_time();
 
-        while (gpio_get_level(DHT_PIN) == 0)
+        while (
+            gpio_get_level(DHT_PIN) == 0
+        )
         {
             if (
-                esp_timer_get_time() - start > 100
+                esp_timer_get_time() -
+                start > 100
             )
             {
-                printf(
+                safe_printf(
                     "DHT22: Bit %d LOW timeout\n",
                     i
                 );
@@ -698,19 +773,19 @@ static bool dht22_read(
             }
         }
 
-        /* Measure HIGH pulse */
-
         int64_t high_start =
             esp_timer_get_time();
 
-        while (gpio_get_level(DHT_PIN) == 1)
+        while (
+            gpio_get_level(DHT_PIN) == 1
+        )
         {
             if (
                 esp_timer_get_time() -
                 high_start > 100
             )
             {
-                printf(
+                safe_printf(
                     "DHT22: Bit %d HIGH timeout\n",
                     i
                 );
@@ -736,16 +811,15 @@ static bool dht22_read(
         }
     }
 
-    printf(
-        "DHT22 raw data: %02X %02X %02X %02X %02X\n",
+    safe_printf(
+        "DHT22 raw data: "
+        "%02X %02X %02X %02X %02X\n",
         data[0],
         data[1],
         data[2],
         data[3],
         data[4]
     );
-
-    /* Check checksum */
 
     uint8_t checksum =
         data[0] +
@@ -755,7 +829,7 @@ static bool dht22_read(
 
     if (checksum != data[4])
     {
-        printf(
+        safe_printf(
             "DHT22: Checksum ERROR "
             "(calculated %02X, received %02X)\n",
             checksum,
@@ -765,16 +839,12 @@ static bool dht22_read(
         return false;
     }
 
-    /* Humidity */
-
     int rawHumidity =
         ((int)data[0] << 8) |
         data[1];
 
     *humidity =
         rawHumidity / 10.0f;
-
-    /* Temperature */
 
     int rawTemperature =
         ((int)data[2] << 8) |
@@ -793,28 +863,26 @@ static bool dht22_read(
             rawTemperature / 10.0f;
     }
 
-    /* Reject impossible all-zero readings */
-
     if (
         *temperature == 0.0f &&
         *humidity == 0.0f
     )
     {
-        printf(
+        safe_printf(
             "DHT22: Invalid all-zero reading\n"
         );
 
         return false;
     }
 
-    printf(
+    safe_printf(
         "DHT22: Temperature = %.2f C, "
         "Humidity = %.2f %%\n",
         *temperature,
         *humidity
     );
 
-    printf(
+    safe_printf(
         "DHT22: Read SUCCESS\n"
     );
 
@@ -867,7 +935,7 @@ static int read_light_level(void)
 
     if (result != ESP_OK)
     {
-        printf(
+        safe_printf(
             "LDR ADC read failed\n"
         );
 
@@ -887,12 +955,12 @@ static int read_light_level(void)
         lightLevel = 100;
     }
 
-    printf(
+    safe_printf(
         "LDR Raw: %d\n",
         raw
     );
 
-    printf(
+    safe_printf(
         "Light Level: %d %%\n",
         lightLevel
     );
@@ -922,11 +990,9 @@ static void SensorTask(void *pvParameters)
                 &humidity
             );
 
-        /* DHT22 */
-
         if (dhtSuccess)
         {
-            printf(
+            safe_printf(
                 "DHT22 read SUCCESS\n"
             );
 
@@ -935,12 +1001,6 @@ static void SensorTask(void *pvParameters)
 
             sensorData.humidity =
                 humidity;
-
-            /*
-             * STEP 35:
-             * Generate EVENT_ALARM based on
-             * the latest valid temperature.
-             */
 
             AlarmState alarmState =
                 evaluateTemperature(
@@ -954,7 +1014,7 @@ static void SensorTask(void *pvParameters)
                     EVENT_ALARM
                 );
 
-                printf(
+                safe_printf(
                     "EVENT_ALARM: SET\n"
                 );
             }
@@ -965,14 +1025,14 @@ static void SensorTask(void *pvParameters)
                     EVENT_ALARM
                 );
 
-                printf(
+                safe_printf(
                     "EVENT_ALARM: CLEARED\n"
                 );
             }
         }
         else
         {
-            printf(
+            safe_printf(
                 "DHT22 read FAILED\n"
             );
 
@@ -982,43 +1042,27 @@ static void SensorTask(void *pvParameters)
             sensorData.humidity =
                 0.0f;
 
-            /*
-             * Do not keep an old alarm active
-             * when a new temperature reading
-             * was not obtained.
-             */
-
             xEventGroupClearBits(
                 systemEventGroup,
                 EVENT_ALARM
             );
         }
 
-        /* LDR */
-
         sensorData.lightLevel =
             read_light_level();
-
-        /*
-         * Motion is owned by MotionTask.
-         * DisplayTask gets the latest motion
-         * state from motionQueue.
-         */
 
         sensorData.motionDetected =
             false;
 
-        printf(
+        safe_printf(
             "Temperature: %.2f C\n",
             sensorData.temperature
         );
 
-        printf(
+        safe_printf(
             "Humidity: %.2f %%\n",
             sensorData.humidity
         );
-
-        /* Send sensor data */
 
         if (
             xQueueSend(
@@ -1028,27 +1072,20 @@ static void SensorTask(void *pvParameters)
             ) == pdPASS
         )
         {
-            printf(
+            safe_printf(
                 "SensorData sent to DisplayTask queue\n"
             );
         }
         else
         {
-            printf(
+            safe_printf(
                 "Failed to send SensorData to queue\n"
             );
         }
 
-        printf(
+        safe_printf(
             "SensorTask waiting 2 sec\n"
         );
-
-        /*
-         * Periodic execution.
-         *
-         * This satisfies the laboratory requirement
-         * to use vTaskDelayUntil().
-         */
 
         vTaskDelayUntil(
             &lastWakeTime,
@@ -1059,7 +1096,6 @@ static void SensorTask(void *pvParameters)
 
 /* =========================================================
    MOTION TASK
-   STEP 31 + STEP 32/34 + STEP 35
    ========================================================= */
 
 static void MotionTask(void *pvParameters)
@@ -1076,30 +1112,21 @@ static void MotionTask(void *pvParameters)
     const TickType_t inactivityTimeout =
         pdMS_TO_TICKS(15000);
 
-    printf(
+    safe_printf(
         "MotionTask started\n"
     );
-
-    /*
-     * Publish initial ACTIVE state.
-     */
 
     xQueueOverwrite(
         stateQueue,
         &currentState
     );
 
-    /*
-     * STEP 35:
-     * Initial system state is ACTIVE.
-     */
-
     xEventGroupSetBits(
         systemEventGroup,
         EVENT_ACTIVE
     );
 
-    printf(
+    safe_printf(
         "EVENT_ACTIVE: SET\n"
     );
 
@@ -1108,54 +1135,30 @@ static void MotionTask(void *pvParameters)
         int pirLevel =
             gpio_get_level(PIR_PIN);
 
-        /*
-         * PIR HIGH means motion detected.
-         */
-
         if (pirLevel == 1)
         {
             if (!motionDetected)
             {
-                printf(
+                safe_printf(
                     "MotionTask: MOTION DETECTED\n"
                 );
-
-                /*
-                 * STEP 35:
-                 * Motion event is produced
-                 * by MotionTask.
-                 */
 
                 xEventGroupSetBits(
                     systemEventGroup,
                     EVENT_MOTION
                 );
 
-                printf(
+                safe_printf(
                     "EVENT_MOTION: SET\n"
                 );
             }
 
             motionDetected = true;
 
-            /*
-             * Allow another inactivity timeout
-             * after motion stops.
-             */
-
             timeoutReported = false;
-
-            /*
-             * Reset inactivity timer.
-             */
 
             lastMotionTime =
                 xTaskGetTickCount();
-
-            /*
-             * If system is INACTIVE,
-             * motion changes it back to ACTIVE.
-             */
 
             if (currentState == INACTIVE)
             {
@@ -1169,9 +1172,12 @@ static void MotionTask(void *pvParameters)
                         false
                     );
 
-                if (currentState != previousState)
+                if (
+                    currentState !=
+                    previousState
+                )
                 {
-                    printf(
+                    safe_printf(
                         "SystemState: "
                         "INACTIVE -> ACTIVE\n"
                     );
@@ -1181,17 +1187,12 @@ static void MotionTask(void *pvParameters)
                         &currentState
                     );
 
-                    /*
-                     * STEP 35:
-                     * System became ACTIVE.
-                     */
-
                     xEventGroupSetBits(
                         systemEventGroup,
                         EVENT_ACTIVE
                     );
 
-                    printf(
+                    safe_printf(
                         "EVENT_ACTIVE: SET\n"
                     );
                 }
@@ -1201,32 +1202,21 @@ static void MotionTask(void *pvParameters)
         {
             if (motionDetected)
             {
-                printf(
+                safe_printf(
                     "MotionTask: NO MOTION\n"
                 );
-
-                /*
-                 * STEP 35:
-                 * Clear motion event when
-                 * motion is no longer detected.
-                 */
 
                 xEventGroupClearBits(
                     systemEventGroup,
                     EVENT_MOTION
                 );
 
-                printf(
+                safe_printf(
                     "EVENT_MOTION: CLEARED\n"
                 );
             }
 
             motionDetected = false;
-
-            /*
-             * Check whether 15 seconds have passed
-             * without motion.
-             */
 
             bool inactivityTimeoutReached =
                 (
@@ -1241,15 +1231,11 @@ static void MotionTask(void *pvParameters)
             {
                 timeoutReported = true;
 
-                printf(
+                safe_printf(
                     "MotionTask: "
                     "NO MOTION - "
                     "15 SECOND TIMEOUT\n"
                 );
-
-                /*
-                 * ACTIVE -> INACTIVE
-                 */
 
                 if (currentState == ACTIVE)
                 {
@@ -1263,9 +1249,12 @@ static void MotionTask(void *pvParameters)
                             true
                         );
 
-                    if (currentState != previousState)
+                    if (
+                        currentState !=
+                        previousState
+                    )
                     {
-                        printf(
+                        safe_printf(
                             "SystemState: "
                             "ACTIVE -> INACTIVE\n"
                         );
@@ -1275,17 +1264,12 @@ static void MotionTask(void *pvParameters)
                             &currentState
                         );
 
-                        /*
-                         * STEP 35:
-                         * System is no longer ACTIVE.
-                         */
-
                         xEventGroupClearBits(
                             systemEventGroup,
                             EVENT_ACTIVE
                         );
 
-                        printf(
+                        safe_printf(
                             "EVENT_ACTIVE: CLEARED\n"
                         );
                     }
@@ -1293,20 +1277,10 @@ static void MotionTask(void *pvParameters)
             }
         }
 
-        /*
-         * Keep latest motion state available
-         * to DisplayTask.
-         */
-
         xQueueOverwrite(
             motionQueue,
             &motionDetected
         );
-
-        /*
-         * Poll PIR every 100 ms.
-         * This prevents a busy loop.
-         */
 
         vTaskDelay(
             pdMS_TO_TICKS(100)
@@ -1328,11 +1302,11 @@ static void InputTask(void *pvParameters)
             ENCODER_CLK_PIN
         );
 
-    printf(
+    safe_printf(
         "InputTask started\n"
     );
 
-    printf(
+    safe_printf(
         "Current DisplayMode: TEMPERATURE\n"
     );
 
@@ -1342,10 +1316,6 @@ static void InputTask(void *pvParameters)
             gpio_get_level(
                 ENCODER_CLK_PIN
             );
-
-        /*
-         * Detect falling edge on CLK.
-         */
 
         if (
             currentCLK != lastCLK &&
@@ -1357,16 +1327,8 @@ static void InputTask(void *pvParameters)
                     ENCODER_DT_PIN
                 );
 
-            /*
-             * Determine direction.
-             */
-
             if (currentDT != currentCLK)
             {
-                /*
-                 * Clockwise
-                 */
-
                 if (currentMode == MOTION)
                 {
                     currentMode =
@@ -1379,10 +1341,6 @@ static void InputTask(void *pvParameters)
             }
             else
             {
-                /*
-                 * Counter-clockwise
-                 */
-
                 if (currentMode == TEMPERATURE)
                 {
                     currentMode =
@@ -1394,26 +1352,17 @@ static void InputTask(void *pvParameters)
                 }
             }
 
-            /*
-             * Send selected mode
-             * to DisplayTask.
-             */
-
             xQueueSend(
                 displayModeQueue,
                 &currentMode,
                 0
             );
 
-            printf(
+            safe_printf(
                 "InputTask: "
                 "DisplayMode changed to %d\n",
                 currentMode
             );
-
-            /*
-             * Encoder debounce.
-             */
 
             vTaskDelay(
                 pdMS_TO_TICKS(20)
@@ -1423,10 +1372,6 @@ static void InputTask(void *pvParameters)
         lastCLK =
             currentCLK;
 
-        /*
-         * Poll encoder every 10 ms.
-         */
-
         vTaskDelay(
             pdMS_TO_TICKS(10)
         );
@@ -1435,7 +1380,6 @@ static void InputTask(void *pvParameters)
 
 /* =========================================================
    DISPLAY TASK
-   STEP 35 CONSUMER
    ========================================================= */
 
 static void DisplayTask(void *pvParameters)
@@ -1456,37 +1400,27 @@ static void DisplayTask(void *pvParameters)
     EventBits_t lastEventBits =
         0;
 
-    printf(
+    safe_printf(
         "DisplayTask started\n"
     );
 
-    /*
-     * OLED is owned ONLY by DisplayTask.
-     */
-
     oled_init();
+
     oled_clear();
+
     oled_set_power(true);
 
     while (1)
     {
         /*
-         * =================================================
-         * STEP 35 - CONSUME EVENT GROUP
-         * =================================================
-         *
-         * DisplayTask monitors all three system events.
+         * STEP 35:
+         * DisplayTask consumes the Event Group.
          */
 
         EventBits_t eventBits =
             xEventGroupGetBits(
                 systemEventGroup
             );
-
-        /*
-         * Print event changes only when
-         * the event state changes.
-         */
 
         if (eventBits != lastEventBits)
         {
@@ -1495,10 +1429,11 @@ static void DisplayTask(void *pvParameters)
             )
             {
                 if (
-                    !(lastEventBits & EVENT_ACTIVE)
+                    !(lastEventBits &
+                      EVENT_ACTIVE)
                 )
                 {
-                    printf(
+                    safe_printf(
                         "DisplayTask: "
                         "EVENT_ACTIVE received\n"
                     );
@@ -1507,10 +1442,11 @@ static void DisplayTask(void *pvParameters)
             else
             {
                 if (
-                    lastEventBits & EVENT_ACTIVE
+                    lastEventBits &
+                    EVENT_ACTIVE
                 )
                 {
-                    printf(
+                    safe_printf(
                         "DisplayTask: "
                         "EVENT_ACTIVE cleared\n"
                     );
@@ -1522,10 +1458,11 @@ static void DisplayTask(void *pvParameters)
             )
             {
                 if (
-                    !(lastEventBits & EVENT_MOTION)
+                    !(lastEventBits &
+                      EVENT_MOTION)
                 )
                 {
-                    printf(
+                    safe_printf(
                         "DisplayTask: "
                         "EVENT_MOTION received\n"
                     );
@@ -1534,10 +1471,11 @@ static void DisplayTask(void *pvParameters)
             else
             {
                 if (
-                    lastEventBits & EVENT_MOTION
+                    lastEventBits &
+                    EVENT_MOTION
                 )
                 {
-                    printf(
+                    safe_printf(
                         "DisplayTask: "
                         "EVENT_MOTION cleared\n"
                     );
@@ -1549,10 +1487,11 @@ static void DisplayTask(void *pvParameters)
             )
             {
                 if (
-                    !(lastEventBits & EVENT_ALARM)
+                    !(lastEventBits &
+                      EVENT_ALARM)
                 )
                 {
-                    printf(
+                    safe_printf(
                         "DisplayTask: "
                         "EVENT_ALARM received\n"
                     );
@@ -1561,10 +1500,11 @@ static void DisplayTask(void *pvParameters)
             else
             {
                 if (
-                    lastEventBits & EVENT_ALARM
+                    lastEventBits &
+                    EVENT_ALARM
                 )
                 {
-                    printf(
+                    safe_printf(
                         "DisplayTask: "
                         "EVENT_ALARM cleared\n"
                     );
@@ -1574,10 +1514,6 @@ static void DisplayTask(void *pvParameters)
             lastEventBits =
                 eventBits;
         }
-
-        /*
-         * Receive latest system state.
-         */
 
         SystemState newState;
 
@@ -1596,17 +1532,13 @@ static void DisplayTask(void *pvParameters)
 
                 if (currentState == INACTIVE)
                 {
-                    /*
-                     * Turn OLED off.
-                     */
-
                     oled_clear();
 
                     oled_set_power(false);
 
                     oledEnabled = false;
 
-                    printf(
+                    safe_printf(
                         "DisplayTask: "
                         "OLED OFF - "
                         "system INACTIVE\n"
@@ -1614,15 +1546,11 @@ static void DisplayTask(void *pvParameters)
                 }
                 else
                 {
-                    /*
-                     * Restore OLED.
-                     */
-
                     oled_set_power(true);
 
                     oledEnabled = true;
 
-                    printf(
+                    safe_printf(
                         "DisplayTask: "
                         "OLED ON - "
                         "system ACTIVE\n"
@@ -1630,16 +1558,6 @@ static void DisplayTask(void *pvParameters)
                 }
             }
         }
-
-        /*
-         * INACTIVE:
-         *
-         * Keep DisplayTask alive so that it can
-         * receive the ACTIVE state later.
-         *
-         * Drain sensor data so SensorTask's queue
-         * does not remain permanently full.
-         */
 
         if (currentState == INACTIVE)
         {
@@ -1654,14 +1572,9 @@ static void DisplayTask(void *pvParameters)
             )
             {
                 /*
-                 * Intentionally discard sensor data
-                 * while the display is inactive.
+                 * Discard sensor data while inactive.
                  */
             }
-
-            /*
-             * MotionTask remains active independently.
-             */
 
             vTaskDelay(
                 pdMS_TO_TICKS(100)
@@ -1669,13 +1582,6 @@ static void DisplayTask(void *pvParameters)
 
             continue;
         }
-
-        /*
-         * ACTIVE:
-         *
-         * Check whether InputTask selected
-         * another display page.
-         */
 
         DisplayMode newMode;
 
@@ -1690,16 +1596,12 @@ static void DisplayTask(void *pvParameters)
             currentMode =
                 newMode;
 
-            printf(
+            safe_printf(
                 "DisplayTask: "
                 "Switched to DisplayMode %d\n",
                 currentMode
             );
         }
-
-        /*
-         * Receive latest motion state.
-         */
 
         bool motionState;
 
@@ -1715,10 +1617,6 @@ static void DisplayTask(void *pvParameters)
                 motionState;
         }
 
-        /*
-         * Receive sensor information.
-         */
-
         if (
             xQueueReceive(
                 sensorQueue,
@@ -1727,10 +1625,6 @@ static void DisplayTask(void *pvParameters)
             ) == pdPASS
         )
         {
-            /*
-             * Check for newer display mode.
-             */
-
             while (
                 xQueueReceive(
                     displayModeQueue,
@@ -1742,10 +1636,6 @@ static void DisplayTask(void *pvParameters)
                 currentMode =
                     newMode;
             }
-
-            /*
-             * Check for newest motion state.
-             */
 
             while (
                 xQueueReceive(
@@ -1759,10 +1649,6 @@ static void DisplayTask(void *pvParameters)
                     motionState;
             }
 
-            /*
-             * Update OLED only while ACTIVE.
-             */
-
             if (
                 oledEnabled &&
                 currentState == ACTIVE
@@ -1770,19 +1656,11 @@ static void DisplayTask(void *pvParameters)
             {
                 oled_clear();
 
-                /*
-                 * Title
-                 */
-
                 oled_write_string(
                     0,
                     28,
                     "ROOM MONITOR"
                 );
-
-                /*
-                 * Selected measurement
-                 */
 
                 switch (currentMode)
                 {
@@ -1809,7 +1687,7 @@ static void DisplayTask(void *pvParameters)
                             temperatureText
                         );
 
-                        printf(
+                        safe_printf(
                             "DisplayTask: "
                             "Temperature page = "
                             "%.2f C\n",
@@ -1842,7 +1720,7 @@ static void DisplayTask(void *pvParameters)
                             humidityText
                         );
 
-                        printf(
+                        safe_printf(
                             "DisplayTask: "
                             "Humidity page = "
                             "%.2f %%\n",
@@ -1875,7 +1753,7 @@ static void DisplayTask(void *pvParameters)
                             lightText
                         );
 
-                        printf(
+                        safe_printf(
                             "DisplayTask: "
                             "Light page = "
                             "%d %%\n",
@@ -1893,7 +1771,9 @@ static void DisplayTask(void *pvParameters)
                             "MOTION"
                         );
 
-                        if (sensorData.motionDetected)
+                        if (
+                            sensorData.motionDetected
+                        )
                         {
                             oled_write_string(
                                 4,
@@ -1910,7 +1790,7 @@ static void DisplayTask(void *pvParameters)
                             );
                         }
 
-                        printf(
+                        safe_printf(
                             "DisplayTask: "
                             "Motion page = "
                             "%d\n",
@@ -1922,11 +1802,6 @@ static void DisplayTask(void *pvParameters)
                 }
             }
         }
-
-        /*
-         * Prevent DisplayTask from continuously
-         * consuming CPU.
-         */
 
         vTaskDelay(
             pdMS_TO_TICKS(20)
@@ -1940,58 +1815,102 @@ static void DisplayTask(void *pvParameters)
 
 void app_main(void)
 {
-    printf("\n");
+    /*
+     * =====================================================
+     * STEP 36 - CREATE SERIAL MUTEX FIRST
+     * =====================================================
+     *
+     * The mutex must exist before any task uses
+     * safe_printf().
+     */
 
-    printf(
+    serialMutex =
+        xSemaphoreCreateMutex();
+
+    if (serialMutex == NULL)
+    {
+        printf(
+            "Failed to create Serial Mutex\n"
+        );
+
+        return;
+    }
+
+    safe_printf(
+        "\n"
+    );
+
+    safe_printf(
         "BCA152 FreeRTOS Multisensor\n"
     );
 
-    printf(
+    safe_printf(
         "System starting...\n"
     );
 
-    /* =====================================================
-       STEP 30 - ALARM LOGIC TESTS
-       ===================================================== */
-
-    printf(
-        "\n===== ALARM LOGIC TESTS =====\n"
+    safe_printf(
+        "\n===== STEP 36: SERIAL MUTEX =====\n"
     );
 
-    printf(
+    safe_printf(
+        "Serial Mutex created successfully\n"
+    );
+
+    safe_printf(
+        "Shared Serial output is protected "
+        "by serialMutex\n"
+    );
+
+    safe_printf(
+        "=================================\n\n"
+    );
+
+    /* =====================================================
+       ALARM LOGIC TESTS
+       ===================================================== */
+
+    safe_printf(
+        "===== ALARM LOGIC TESTS =====\n"
+    );
+
+    safe_printf(
         "Alarm Test 17.9 C = %d\n",
         evaluateTemperature(17.9f)
     );
 
-    printf(
+    safe_printf(
         "Alarm Test 18.0 C = %d\n",
         evaluateTemperature(18.0f)
     );
 
-    printf(
+    safe_printf(
         "Alarm Test 24.0 C = %d\n",
         evaluateTemperature(24.0f)
     );
 
-    printf(
+    safe_printf(
         "Alarm Test 30.0 C = %d\n",
         evaluateTemperature(30.0f)
     );
 
-    printf(
+    safe_printf(
         "Alarm Test 30.1 C = %d\n",
         evaluateTemperature(30.1f)
     );
 
-    printf(
+    safe_printf(
         "============================\n\n"
     );
 
-    /* Initialize LDR */
+    /* =====================================================
+       INITIALIZE LDR
+       ===================================================== */
 
     ldr_init();
 
-    /* Configure DHT22 */
+    /* =====================================================
+       CONFIGURE DHT22
+       ===================================================== */
 
     gpio_set_direction(
         DHT_PIN,
@@ -2002,7 +1921,9 @@ void app_main(void)
         DHT_PIN
     );
 
-    /* Configure rotary encoder */
+    /* =====================================================
+       CONFIGURE ROTARY ENCODER
+       ===================================================== */
 
     gpio_config_t encoder_config =
     {
@@ -2030,7 +1951,9 @@ void app_main(void)
         )
     );
 
-    /* Configure PIR */
+    /* =====================================================
+       CONFIGURE PIR
+       ===================================================== */
 
     gpio_config_t pir_config =
     {
@@ -2057,7 +1980,7 @@ void app_main(void)
     );
 
     /* =====================================================
-       CREATE SENSOR QUEUE
+       SENSOR QUEUE
        ===================================================== */
 
     sensorQueue =
@@ -2068,19 +1991,19 @@ void app_main(void)
 
     if (sensorQueue == NULL)
     {
-        printf(
+        safe_printf(
             "Failed to create Sensor Queue\n"
         );
 
         return;
     }
 
-    printf(
+    safe_printf(
         "Sensor Queue created successfully\n"
     );
 
     /* =====================================================
-       CREATE DISPLAY MODE QUEUE
+       DISPLAY MODE QUEUE
        ===================================================== */
 
     displayModeQueue =
@@ -2091,19 +2014,19 @@ void app_main(void)
 
     if (displayModeQueue == NULL)
     {
-        printf(
+        safe_printf(
             "Failed to create Display Mode Queue\n"
         );
 
         return;
     }
 
-    printf(
+    safe_printf(
         "Display Mode Queue created successfully\n"
     );
 
     /* =====================================================
-       CREATE MOTION QUEUE
+       MOTION QUEUE
        ===================================================== */
 
     motionQueue =
@@ -2114,19 +2037,19 @@ void app_main(void)
 
     if (motionQueue == NULL)
     {
-        printf(
+        safe_printf(
             "Failed to create Motion Queue\n"
         );
 
         return;
     }
 
-    printf(
+    safe_printf(
         "Motion Queue created successfully\n"
     );
 
     /* =====================================================
-       CREATE SYSTEM STATE QUEUE
+       SYSTEM STATE QUEUE
        ===================================================== */
 
     stateQueue =
@@ -2137,19 +2060,19 @@ void app_main(void)
 
     if (stateQueue == NULL)
     {
-        printf(
+        safe_printf(
             "Failed to create System State Queue\n"
         );
 
         return;
     }
 
-    printf(
+    safe_printf(
         "System State Queue created successfully\n"
     );
 
     /* =====================================================
-       CREATE EVENT GROUP - STEP 35
+       EVENT GROUP - STEP 35
        ===================================================== */
 
     systemEventGroup =
@@ -2157,31 +2080,31 @@ void app_main(void)
 
     if (systemEventGroup == NULL)
     {
-        printf(
+        safe_printf(
             "Failed to create System Event Group\n"
         );
 
         return;
     }
 
-    printf(
+    safe_printf(
         "System Event Group created successfully\n"
     );
 
-    printf(
+    safe_printf(
         "EVENT_ACTIVE = BIT0\n"
     );
 
-    printf(
+    safe_printf(
         "EVENT_MOTION = BIT1\n"
     );
 
-    printf(
+    safe_printf(
         "EVENT_ALARM  = BIT2\n"
     );
 
     /* =====================================================
-       CREATE FREERTOS TASKS
+       CREATE TASKS
        ===================================================== */
 
     xTaskCreate(
