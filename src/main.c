@@ -992,6 +992,9 @@ static void InputTask(void *pvParameters)
                 "InputTask: DisplayMode changed to %d\n",
                 currentMode
             );
+
+            /* Small debounce/yield after a detected encoder step. */
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
 
         lastCLK =
@@ -1237,6 +1240,10 @@ static void DisplayTask(void *pvParameters)
                 }
             }
         }
+
+        /* Prevent DisplayTask from continuously consuming CPU
+           when there is no new sensor data or mode change. */
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -1382,7 +1389,10 @@ void app_main(void)
     /*
      * Create InputTask.
      *
-     * Priority = 3
+     * Priority = 2
+     *
+     * Keep the encoder task responsive while allowing the
+     * sensor task and display task to run normally.
      */
 
     xTaskCreate(
@@ -1390,7 +1400,7 @@ void app_main(void)
         "InputTask",
         4096,
         NULL,
-        3,
+        2,
         NULL
     );
 }
