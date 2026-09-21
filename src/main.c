@@ -5,10 +5,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/event_groups.h"
 
 #include "driver/gpio.h"
 #include "driver/i2c.h"
-
 #include "esp_adc/adc_oneshot.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
@@ -33,6 +33,34 @@
 #define ENCODER_CLK_PIN     GPIO_NUM_32
 #define ENCODER_DT_PIN      GPIO_NUM_33
 #define ENCODER_SW_PIN      GPIO_NUM_25
+
+/* =========================================================
+   STEP 35 - EVENT GROUP
+   ========================================================= */
+
+#define EVENT_ACTIVE  BIT0
+#define EVENT_MOTION  BIT1
+#define EVENT_ALARM   BIT2
+
+/*
+ * EVENT_ACTIVE
+ * Producer : MotionTask
+ * Consumer : DisplayTask
+ * Set      : When system becomes ACTIVE
+ * Cleared  : When system becomes INACTIVE
+ *
+ * EVENT_MOTION
+ * Producer : MotionTask
+ * Consumer : DisplayTask
+ * Set      : When PIR detects motion
+ * Cleared  : When no motion is detected
+ *
+ * EVENT_ALARM
+ * Producer : SensorTask
+ * Consumer : DisplayTask
+ * Set      : When temperature is below 18 C or above 30 C
+ * Cleared  : When temperature returns to normal range
+ */
 
 /* =========================================================
    DISPLAY MODE
@@ -132,6 +160,8 @@ static QueueHandle_t sensorQueue = NULL;
 static QueueHandle_t displayModeQueue = NULL;
 static QueueHandle_t motionQueue = NULL;
 static QueueHandle_t stateQueue = NULL;
+
+static EventGroupHandle_t systemEventGroup = NULL;
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 
@@ -886,14 +916,15 @@ static void SensorTask(void *pvParameters)
         float temperature = 0.0f;
         float humidity = 0.0f;
 
-        /* DHT22 */
-
-        if (
+        bool dhtSuccess =
             dht22_read(
                 &temperature,
                 &humidity
-            )
-        )
+            );
+
+        /* DHT22 */
+
+        if (dhtSuccess)
         {
             printf(
                 "DHT22 read SUCCESS\n"
@@ -904,6 +935,40 @@ static void SensorTask(void *pvParameters)
 
             sensorData.humidity =
                 humidity;
+
+            /*
+             * STEP 35:
+             * Generate EVENT_ALARM based on
+             * the latest valid temperature.
+             */
+
+            AlarmState alarmState =
+                evaluateTemperature(
+                    temperature
+                );
+
+            if (alarmState != NORMAL)
+            {
+                xEventGroupSetBits(
+                    systemEventGroup,
+                    EVENT_ALARM
+                );
+
+                printf(
+                    "EVENT_ALARM: SET\n"
+                );
+            }
+            else
+            {
+                xEventGroupClearBits(
+                    systemEventGroup,
+                    EVENT_ALARM
+                );
+
+                printf(
+                    "EVENT_ALARM: CLEARED\n"
+                );
+            }
         }
         else
         {
@@ -916,6 +981,17 @@ static void SensorTask(void *pvParameters)
 
             sensorData.humidity =
                 0.0f;
+
+            /*
+             * Do not keep an old alarm active
+             * when a new temperature reading
+             * was not obtained.
+             */
+
+            xEventGroupClearBits(
+                systemEventGroup,
+                EVENT_ALARM
+            );
         }
 
         /* LDR */
@@ -929,7 +1005,8 @@ static void SensorTask(void *pvParameters)
          * state from motionQueue.
          */
 
-        sensorData.motionDetected = false;
+        sensorData.motionDetected =
+            false;
 
         printf(
             "Temperature: %.2f C\n",
@@ -981,7 +1058,8 @@ static void SensorTask(void *pvParameters)
 }
 
 /* =========================================================
-   MOTION TASK - STEP 31 + STEP 32/34 STATE MACHINE
+   MOTION TASK
+   STEP 31 + STEP 32/34 + STEP 35
    ========================================================= */
 
 static void MotionTask(void *pvParameters)
@@ -1003,12 +1081,26 @@ static void MotionTask(void *pvParameters)
     );
 
     /*
-     * Publish the initial ACTIVE state.
+     * Publish initial ACTIVE state.
      */
 
     xQueueOverwrite(
         stateQueue,
         &currentState
+    );
+
+    /*
+     * STEP 35:
+     * Initial system state is ACTIVE.
+     */
+
+    xEventGroupSetBits(
+        systemEventGroup,
+        EVENT_ACTIVE
+    );
+
+    printf(
+        "EVENT_ACTIVE: SET\n"
     );
 
     while (1)
@@ -1027,6 +1119,21 @@ static void MotionTask(void *pvParameters)
                 printf(
                     "MotionTask: MOTION DETECTED\n"
                 );
+
+                /*
+                 * STEP 35:
+                 * Motion event is produced
+                 * by MotionTask.
+                 */
+
+                xEventGroupSetBits(
+                    systemEventGroup,
+                    EVENT_MOTION
+                );
+
+                printf(
+                    "EVENT_MOTION: SET\n"
+                );
             }
 
             motionDetected = true;
@@ -1039,14 +1146,14 @@ static void MotionTask(void *pvParameters)
             timeoutReported = false;
 
             /*
-             * Reset the inactivity timer.
+             * Reset inactivity timer.
              */
 
             lastMotionTime =
                 xTaskGetTickCount();
 
             /*
-             * If the system is currently INACTIVE,
+             * If system is INACTIVE,
              * motion changes it back to ACTIVE.
              */
 
@@ -1073,6 +1180,20 @@ static void MotionTask(void *pvParameters)
                         stateQueue,
                         &currentState
                     );
+
+                    /*
+                     * STEP 35:
+                     * System became ACTIVE.
+                     */
+
+                    xEventGroupSetBits(
+                        systemEventGroup,
+                        EVENT_ACTIVE
+                    );
+
+                    printf(
+                        "EVENT_ACTIVE: SET\n"
+                    );
                 }
             }
         }
@@ -1082,6 +1203,21 @@ static void MotionTask(void *pvParameters)
             {
                 printf(
                     "MotionTask: NO MOTION\n"
+                );
+
+                /*
+                 * STEP 35:
+                 * Clear motion event when
+                 * motion is no longer detected.
+                 */
+
+                xEventGroupClearBits(
+                    systemEventGroup,
+                    EVENT_MOTION
+                );
+
+                printf(
+                    "EVENT_MOTION: CLEARED\n"
                 );
             }
 
@@ -1138,13 +1274,27 @@ static void MotionTask(void *pvParameters)
                             stateQueue,
                             &currentState
                         );
+
+                        /*
+                         * STEP 35:
+                         * System is no longer ACTIVE.
+                         */
+
+                        xEventGroupClearBits(
+                            systemEventGroup,
+                            EVENT_ACTIVE
+                        );
+
+                        printf(
+                            "EVENT_ACTIVE: CLEARED\n"
+                        );
                     }
                 }
             }
         }
 
         /*
-         * Keep the latest motion state available
+         * Keep latest motion state available
          * to DisplayTask.
          */
 
@@ -1285,6 +1435,7 @@ static void InputTask(void *pvParameters)
 
 /* =========================================================
    DISPLAY TASK
+   STEP 35 CONSUMER
    ========================================================= */
 
 static void DisplayTask(void *pvParameters)
@@ -1302,6 +1453,9 @@ static void DisplayTask(void *pvParameters)
 
     bool oledEnabled = true;
 
+    EventBits_t lastEventBits =
+        0;
+
     printf(
         "DisplayTask started\n"
     );
@@ -1311,15 +1465,118 @@ static void DisplayTask(void *pvParameters)
      */
 
     oled_init();
-
     oled_clear();
-
     oled_set_power(true);
 
     while (1)
     {
         /*
-         * Receive the latest system state.
+         * =================================================
+         * STEP 35 - CONSUME EVENT GROUP
+         * =================================================
+         *
+         * DisplayTask monitors all three system events.
+         */
+
+        EventBits_t eventBits =
+            xEventGroupGetBits(
+                systemEventGroup
+            );
+
+        /*
+         * Print event changes only when
+         * the event state changes.
+         */
+
+        if (eventBits != lastEventBits)
+        {
+            if (
+                eventBits & EVENT_ACTIVE
+            )
+            {
+                if (
+                    !(lastEventBits & EVENT_ACTIVE)
+                )
+                {
+                    printf(
+                        "DisplayTask: "
+                        "EVENT_ACTIVE received\n"
+                    );
+                }
+            }
+            else
+            {
+                if (
+                    lastEventBits & EVENT_ACTIVE
+                )
+                {
+                    printf(
+                        "DisplayTask: "
+                        "EVENT_ACTIVE cleared\n"
+                    );
+                }
+            }
+
+            if (
+                eventBits & EVENT_MOTION
+            )
+            {
+                if (
+                    !(lastEventBits & EVENT_MOTION)
+                )
+                {
+                    printf(
+                        "DisplayTask: "
+                        "EVENT_MOTION received\n"
+                    );
+                }
+            }
+            else
+            {
+                if (
+                    lastEventBits & EVENT_MOTION
+                )
+                {
+                    printf(
+                        "DisplayTask: "
+                        "EVENT_MOTION cleared\n"
+                    );
+                }
+            }
+
+            if (
+                eventBits & EVENT_ALARM
+            )
+            {
+                if (
+                    !(lastEventBits & EVENT_ALARM)
+                )
+                {
+                    printf(
+                        "DisplayTask: "
+                        "EVENT_ALARM received\n"
+                    );
+                }
+            }
+            else
+            {
+                if (
+                    lastEventBits & EVENT_ALARM
+                )
+                {
+                    printf(
+                        "DisplayTask: "
+                        "EVENT_ALARM cleared\n"
+                    );
+                }
+            }
+
+            lastEventBits =
+                eventBits;
+        }
+
+        /*
+         * Receive latest system state.
          */
 
         SystemState newState;
@@ -1889,6 +2146,38 @@ void app_main(void)
 
     printf(
         "System State Queue created successfully\n"
+    );
+
+    /* =====================================================
+       CREATE EVENT GROUP - STEP 35
+       ===================================================== */
+
+    systemEventGroup =
+        xEventGroupCreate();
+
+    if (systemEventGroup == NULL)
+    {
+        printf(
+            "Failed to create System Event Group\n"
+        );
+
+        return;
+    }
+
+    printf(
+        "System Event Group created successfully\n"
+    );
+
+    printf(
+        "EVENT_ACTIVE = BIT0\n"
+    );
+
+    printf(
+        "EVENT_MOTION = BIT1\n"
+    );
+
+    printf(
+        "EVENT_ALARM  = BIT2\n"
     );
 
     /* =====================================================
