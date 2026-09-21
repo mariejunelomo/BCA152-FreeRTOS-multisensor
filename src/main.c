@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdarg.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,6 +13,10 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
+
+#include "alarm.h"
+#include "system_state.h"
+#include "rtos_objects.h"
 
 /* =========================================================
    PIN DEFINITIONS
@@ -65,51 +68,6 @@
  */
 
 /* =========================================================
-   STEP 36 - SERIAL MUTEX
-   ========================================================= */
-
-/*
- * Serial output is a shared resource because multiple
- * FreeRTOS tasks use printf().
- *
- * The mutex prevents multiple tasks from writing to the
- * Serial output at the same time.
- */
-
-static SemaphoreHandle_t serialMutex = NULL;
-
-/*
- * Thread-safe printf wrapper.
- *
- * xSemaphoreTake() locks the Serial resource.
- * vprintf() performs the actual formatted output.
- * xSemaphoreGive() releases the Serial resource.
- */
-
-static void safe_printf(const char *format, ...)
-{
-    if (serialMutex != NULL)
-    {
-        xSemaphoreTake(
-            serialMutex,
-            portMAX_DELAY
-        );
-    }
-
-    va_list args;
-    va_start(args, format);
-
-    vprintf(format, args);
-
-    va_end(args);
-
-    if (serialMutex != NULL)
-    {
-        xSemaphoreGive(serialMutex);
-    }
-}
-
-/* =========================================================
    DISPLAY MODE
    ========================================================= */
 
@@ -134,76 +92,8 @@ typedef struct
 } SensorData;
 
 /* =========================================================
-   ALARM STATE
+   GLOBAL SENSOR HARDWARE
    ========================================================= */
-
-typedef enum
-{
-    NORMAL,
-    LOW_TEMPERATURE,
-    HIGH_TEMPERATURE
-} AlarmState;
-
-AlarmState evaluateTemperature(float temperature)
-{
-    if (temperature < 18.0f)
-    {
-        return LOW_TEMPERATURE;
-    }
-
-    if (temperature > 30.0f)
-    {
-        return HIGH_TEMPERATURE;
-    }
-
-    return NORMAL;
-}
-
-/* =========================================================
-   SYSTEM STATE
-   ========================================================= */
-
-typedef enum
-{
-    ACTIVE,
-    INACTIVE
-} SystemState;
-
-SystemState evaluateSystemState(
-    SystemState currentState,
-    bool motionDetected,
-    bool inactivityTimeout
-)
-{
-    if (
-        currentState == ACTIVE &&
-        inactivityTimeout
-    )
-    {
-        return INACTIVE;
-    }
-
-    if (
-        currentState == INACTIVE &&
-        motionDetected
-    )
-    {
-        return ACTIVE;
-    }
-
-    return currentState;
-}
-
-/* =========================================================
-   GLOBAL QUEUES / EVENT GROUP
-   ========================================================= */
-
-static QueueHandle_t sensorQueue = NULL;
-static QueueHandle_t displayModeQueue = NULL;
-static QueueHandle_t motionQueue = NULL;
-static QueueHandle_t stateQueue = NULL;
-
-static EventGroupHandle_t systemEventGroup = NULL;
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 
@@ -274,9 +164,7 @@ static void oled_init(void)
         )
     );
 
-    vTaskDelay(
-        pdMS_TO_TICKS(100)
-    );
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     oled_command(0xAE);
     oled_command(0x20);
@@ -313,37 +201,20 @@ static void oled_set_cursor(
     uint8_t column
 )
 {
-    oled_command(
-        0xB0 + page
-    );
-
-    oled_command(
-        0x00 + (column & 0x0F)
-    );
-
-    oled_command(
-        0x10 + ((column >> 4) & 0x0F)
-    );
+    oled_command(0xB0 + page);
+    oled_command(0x00 + (column & 0x0F));
+    oled_command(0x10 + ((column >> 4) & 0x0F));
 }
 
 static void oled_clear(void)
 {
-    for (
-        uint8_t page = 0;
-        page < 8;
-        page++
-    )
+    for (uint8_t page = 0; page < 8; page++)
     {
-        oled_set_cursor(
-            page,
-            0
-        );
+        oled_set_cursor(page, 0);
 
-        for (
-            uint8_t column = 0;
-            column < OLED_WIDTH;
-            column++
-        )
+        for (uint8_t column = 0;
+             column < OLED_WIDTH;
+             column++)
         {
             oled_data(0x00);
         }
@@ -610,10 +481,7 @@ static void oled_write_char(
             break;
     }
 
-    oled_set_cursor(
-        page,
-        column
-    );
+    oled_set_cursor(page, column);
 
     for (int i = 0; i < 5; i++)
     {
@@ -651,36 +519,19 @@ static bool dht22_read(
     float *humidity
 )
 {
-    uint8_t data[5] =
-    {
-        0,
-        0,
-        0,
-        0,
-        0
-    };
+    uint8_t data[5] = {0, 0, 0, 0, 0};
 
-    safe_printf(
-        "DHT22: Starting read...\n"
-    );
+    safe_printf("DHT22: Starting read...\n");
 
     gpio_set_direction(
         DHT_PIN,
         GPIO_MODE_OUTPUT
     );
 
-    gpio_set_level(
-        DHT_PIN,
-        0
-    );
-
+    gpio_set_level(DHT_PIN, 0);
     esp_rom_delay_us(1200);
 
-    gpio_set_level(
-        DHT_PIN,
-        1
-    );
-
+    gpio_set_level(DHT_PIN, 1);
     esp_rom_delay_us(30);
 
     gpio_set_direction(
@@ -690,119 +541,80 @@ static bool dht22_read(
 
     gpio_pullup_en(DHT_PIN);
 
-    int64_t start =
-        esp_timer_get_time();
+    int64_t start = esp_timer_get_time();
 
-    while (
-        gpio_get_level(DHT_PIN) == 1
-    )
+    while (gpio_get_level(DHT_PIN) == 1)
     {
-        if (
-            esp_timer_get_time() -
-            start > 100
-        )
+        if (esp_timer_get_time() - start > 100)
         {
             safe_printf(
                 "DHT22: Response LOW timeout\n"
             );
-
             return false;
         }
     }
 
-    start =
-        esp_timer_get_time();
+    start = esp_timer_get_time();
 
-    while (
-        gpio_get_level(DHT_PIN) == 0
-    )
+    while (gpio_get_level(DHT_PIN) == 0)
     {
-        if (
-            esp_timer_get_time() -
-            start > 100
-        )
+        if (esp_timer_get_time() - start > 100)
         {
             safe_printf(
                 "DHT22: Response HIGH timeout\n"
             );
-
             return false;
         }
     }
 
-    start =
-        esp_timer_get_time();
+    start = esp_timer_get_time();
 
-    while (
-        gpio_get_level(DHT_PIN) == 1
-    )
+    while (gpio_get_level(DHT_PIN) == 1)
     {
-        if (
-            esp_timer_get_time() -
-            start > 100
-        )
+        if (esp_timer_get_time() - start > 100)
         {
             safe_printf(
                 "DHT22: Response DATA timeout\n"
             );
-
             return false;
         }
     }
 
     for (int i = 0; i < 40; i++)
     {
-        start =
-            esp_timer_get_time();
+        start = esp_timer_get_time();
 
-        while (
-            gpio_get_level(DHT_PIN) == 0
-        )
+        while (gpio_get_level(DHT_PIN) == 0)
         {
-            if (
-                esp_timer_get_time() -
-                start > 100
-            )
+            if (esp_timer_get_time() - start > 100)
             {
                 safe_printf(
                     "DHT22: Bit %d LOW timeout\n",
                     i
                 );
-
                 return false;
             }
         }
 
-        int64_t high_start =
-            esp_timer_get_time();
+        int64_t high_start = esp_timer_get_time();
 
-        while (
-            gpio_get_level(DHT_PIN) == 1
-        )
+        while (gpio_get_level(DHT_PIN) == 1)
         {
-            if (
-                esp_timer_get_time() -
-                high_start > 100
-            )
+            if (esp_timer_get_time() - high_start > 100)
             {
                 safe_printf(
                     "DHT22: Bit %d HIGH timeout\n",
                     i
                 );
-
                 return false;
             }
         }
 
         int64_t pulse_length =
-            esp_timer_get_time() -
-            high_start;
+            esp_timer_get_time() - high_start;
 
-        int byte_index =
-            i / 8;
-
-        int bit_index =
-            7 - (i % 8);
+        int byte_index = i / 8;
+        int bit_index = 7 - (i % 8);
 
         if (pulse_length > 40)
         {
@@ -840,14 +652,14 @@ static bool dht22_read(
     }
 
     int rawHumidity =
-        ((int)data[0] << 8) |
+        (data[0] << 8) |
         data[1];
 
     *humidity =
         rawHumidity / 10.0f;
 
     int rawTemperature =
-        ((int)data[2] << 8) |
+        (data[2] << 8) |
         data[3];
 
     if (rawTemperature & 0x8000)
@@ -1154,7 +966,6 @@ static void MotionTask(void *pvParameters)
             }
 
             motionDetected = true;
-
             timeoutReported = false;
 
             lastMotionTime =
@@ -1405,15 +1216,12 @@ static void DisplayTask(void *pvParameters)
     );
 
     oled_init();
-
     oled_clear();
-
     oled_set_power(true);
 
     while (1)
     {
-        /*
-         * STEP 35:
+        /* STEP 35:
          * DisplayTask consumes the Event Group.
          */
 
@@ -1424,14 +1232,9 @@ static void DisplayTask(void *pvParameters)
 
         if (eventBits != lastEventBits)
         {
-            if (
-                eventBits & EVENT_ACTIVE
-            )
+            if (eventBits & EVENT_ACTIVE)
             {
-                if (
-                    !(lastEventBits &
-                      EVENT_ACTIVE)
-                )
+                if (!(lastEventBits & EVENT_ACTIVE))
                 {
                     safe_printf(
                         "DisplayTask: "
@@ -1441,10 +1244,7 @@ static void DisplayTask(void *pvParameters)
             }
             else
             {
-                if (
-                    lastEventBits &
-                    EVENT_ACTIVE
-                )
+                if (lastEventBits & EVENT_ACTIVE)
                 {
                     safe_printf(
                         "DisplayTask: "
@@ -1453,14 +1253,9 @@ static void DisplayTask(void *pvParameters)
                 }
             }
 
-            if (
-                eventBits & EVENT_MOTION
-            )
+            if (eventBits & EVENT_MOTION)
             {
-                if (
-                    !(lastEventBits &
-                      EVENT_MOTION)
-                )
+                if (!(lastEventBits & EVENT_MOTION))
                 {
                     safe_printf(
                         "DisplayTask: "
@@ -1470,10 +1265,7 @@ static void DisplayTask(void *pvParameters)
             }
             else
             {
-                if (
-                    lastEventBits &
-                    EVENT_MOTION
-                )
+                if (lastEventBits & EVENT_MOTION)
                 {
                     safe_printf(
                         "DisplayTask: "
@@ -1482,14 +1274,9 @@ static void DisplayTask(void *pvParameters)
                 }
             }
 
-            if (
-                eventBits & EVENT_ALARM
-            )
+            if (eventBits & EVENT_ALARM)
             {
-                if (
-                    !(lastEventBits &
-                      EVENT_ALARM)
-                )
+                if (!(lastEventBits & EVENT_ALARM))
                 {
                     safe_printf(
                         "DisplayTask: "
@@ -1499,10 +1286,7 @@ static void DisplayTask(void *pvParameters)
             }
             else
             {
-                if (
-                    lastEventBits &
-                    EVENT_ALARM
-                )
+                if (lastEventBits & EVENT_ALARM)
                 {
                     safe_printf(
                         "DisplayTask: "
@@ -1533,9 +1317,7 @@ static void DisplayTask(void *pvParameters)
                 if (currentState == INACTIVE)
                 {
                     oled_clear();
-
                     oled_set_power(false);
-
                     oledEnabled = false;
 
                     safe_printf(
@@ -1547,7 +1329,6 @@ static void DisplayTask(void *pvParameters)
                 else
                 {
                     oled_set_power(true);
-
                     oledEnabled = true;
 
                     safe_printf(
@@ -1571,9 +1352,7 @@ static void DisplayTask(void *pvParameters)
                 ) == pdPASS
             )
             {
-                /*
-                 * Discard sensor data while inactive.
-                 */
+                /* Discard sensor data while inactive. */
             }
 
             vTaskDelay(
@@ -1771,9 +1550,7 @@ static void DisplayTask(void *pvParameters)
                             "MOTION"
                         );
 
-                        if (
-                            sensorData.motionDetected
-                        )
+                        if (sensorData.motionDetected)
                         {
                             oled_write_string(
                                 4,
@@ -1816,9 +1593,7 @@ static void DisplayTask(void *pvParameters)
 void app_main(void)
 {
     /*
-     * =====================================================
      * STEP 36 - CREATE SERIAL MUTEX FIRST
-     * =====================================================
      *
      * The mutex must exist before any task uses
      * safe_printf().
@@ -1836,9 +1611,7 @@ void app_main(void)
         return;
     }
 
-    safe_printf(
-        "\n"
-    );
+    safe_printf("\n");
 
     safe_printf(
         "BCA152 FreeRTOS Multisensor\n"
@@ -1917,9 +1690,7 @@ void app_main(void)
         GPIO_MODE_INPUT
     );
 
-    gpio_pullup_en(
-        DHT_PIN
-    );
+    gpio_pullup_en(DHT_PIN);
 
     /* =====================================================
        CONFIGURE ROTARY ENCODER
