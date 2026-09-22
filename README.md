@@ -1,3 +1,0 @@
-"# MajuGwapa" 
-"# MajuGwapa" 
-"# MajuDayan" 
