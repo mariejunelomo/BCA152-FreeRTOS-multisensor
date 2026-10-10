@@ -20,13 +20,20 @@
       "attrs": { "i2cAddress": "0x3c" }
     },
     { "type": "wokwi-ky-040", "id": "encoder1", "top": -46.3, "left": -135.2, "attrs": {} },
-    { "type": "wokwi-pir-motion-sensor", "id": "pir1", "top": -34.4, "left": 165.42, "attrs": {} }
+    { "type": "wokwi-pir-motion-sensor", "id": "pir1", "top": -34.4, "left": 165.42, "attrs": {} },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": 165.6,
+      "left": -142.2,
+      "attrs": { "volume": "0.1" }
+    }
   ],
   "connections": [
     [ "esp:TX", "$serialMonitor:RX", "", [] ],
     [ "esp:RX", "$serialMonitor:TX", "", [] ],
     [ "dht1:VCC", "esp:3V3", "red", [ "h-38.4", "v-134.4", "h119.81" ] ],
-    [ "dht1:SDA", "esp:4", "green", [ "v86.4", "h168.06" ] ],
+    [ "dht1:SDA", "esp:4", "green", [ "v86.4", "h182.5", "v-105.6" ] ],
     [ "ldr1:VCC", "esp:3V3", "red", [ "v-134.4", "h-312.19" ] ],
     [ "esp:GND.3", "ldr1:GND", "black", [ "h24.04", "v57.6", "h201.6", "v-47.6" ] ],
     [ "ldr1:AO", "esp:34", "green", [ "h9.6", "v133.7", "h-336", "v-182.4" ] ],
@@ -42,7 +49,9 @@
     [ "encoder1:GND", "esp:GND.1", "black", [ "h9.6", "v154.4" ] ],
     [ "pir1:OUT", "esp:27", "green", [ "h-86.54", "v192", "h-134.4", "v-124.8" ] ],
     [ "pir1:VCC", "esp:3V3", "red", [ "h-76.8", "v-105.6", "h-120.19" ] ],
-    [ "pir1:GND", "esp:GND.1", "black", [ "h-96.26", "v192", "h-134.4", "v-96" ] ]
+    [ "pir1:GND", "esp:GND.1", "black", [ "h-96.26", "v192", "h-134.4", "v-96" ] ],
+    [ "esp:26", "bz1:2", "green", [ "h-14.21", "v134.4" ] ],
+    [ "esp:GND.1", "bz1:1", "black", [ "h-14.21", "v96" ] ]
   ],
   "dependencies": {}
 }

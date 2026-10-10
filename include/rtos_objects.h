@@ -8,18 +8,16 @@
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
-
 #include "esp_adc/adc_oneshot.h"
 
 extern QueueHandle_t sensorQueue;
+extern QueueHandle_t alarmQueue;
 extern QueueHandle_t displayModeQueue;
 extern QueueHandle_t motionQueue;
 extern QueueHandle_t stateQueue;
 
 extern EventGroupHandle_t systemEventGroup;
-
 extern SemaphoreHandle_t serialMutex;
-
 extern adc_oneshot_unit_handle_t adc_handle;
 
 void safe_printf(const char *format, ...);

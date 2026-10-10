@@ -9,6 +9,7 @@ typedef struct
     float humidity;
     int lightLevel;
     bool motionDetected;
+    bool temperatureValid;
 } SensorData;
 
 void SensorTask(void *pvParameters);
