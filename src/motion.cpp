@@ -11,8 +11,6 @@
 
 #include "driver/gpio.h"
 
-#define PIR_PIN GPIO_NUM_27
-
 void MotionTask(void *pvParameters)
 {
     bool motionDetected = false;
