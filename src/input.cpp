@@ -8,9 +8,6 @@
 
 #include "driver/gpio.h"
 
-#define ENCODER_CLK_PIN GPIO_NUM_32
-#define ENCODER_DT_PIN  GPIO_NUM_33
-
 DisplayMode nextDisplayMode(DisplayMode mode)
 {
     switch (mode)
