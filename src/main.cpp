@@ -39,10 +39,6 @@
 // STEP 35 - EVENT GROUP
 // =========================================================
 
-#define EVENT_ACTIVE BIT0
-#define EVENT_MOTION BIT1
-#define EVENT_ALARM  BIT2
-
 // EVENT_ACTIVE: Set/cleared by MotionTask
 // EVENT_MOTION: Set/cleared by MotionTask
 // EVENT_ALARM: Set/cleared by AlarmTask

@@ -13,9 +13,6 @@
 
 #define PIR_PIN GPIO_NUM_27
 
-#define EVENT_ACTIVE  BIT0
-#define EVENT_MOTION  BIT1
-
 void MotionTask(void *pvParameters)
 {
     bool motionDetected = false;

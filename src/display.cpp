@@ -13,10 +13,6 @@
 #include "driver/gpio.h"
 #include "esp_err.h"
 
-#define EVENT_ACTIVE  BIT0
-#define EVENT_MOTION  BIT1
-#define EVENT_ALARM   BIT2
-
 #define OLED_SDA_PIN        GPIO_NUM_21
 #define OLED_SCL_PIN        GPIO_NUM_22
 #define OLED_I2C_PORT       I2C_NUM_0

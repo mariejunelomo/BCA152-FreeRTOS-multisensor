@@ -9,6 +9,12 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "esp_adc/adc_oneshot.h"
+#include "esp_bit_defs.h"
+
+// Event group bits (systemEventGroup)
+#define EVENT_ACTIVE BIT0
+#define EVENT_MOTION BIT1
+#define EVENT_ALARM  BIT2
 
 extern QueueHandle_t sensorQueue;
 extern QueueHandle_t alarmQueue;
