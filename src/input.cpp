@@ -11,9 +11,33 @@
 #define ENCODER_CLK_PIN GPIO_NUM_32
 #define ENCODER_DT_PIN  GPIO_NUM_33
 
+DisplayMode nextDisplayMode(DisplayMode mode)
+{
+    switch (mode)
+    {
+        case DisplayMode::TEMPERATURE: return DisplayMode::HUMIDITY;
+        case DisplayMode::HUMIDITY:    return DisplayMode::LIGHT;
+        case DisplayMode::LIGHT:       return DisplayMode::MOTION;
+        case DisplayMode::MOTION:      return DisplayMode::TEMPERATURE;
+    }
+    return DisplayMode::TEMPERATURE;
+}
+
+DisplayMode previousDisplayMode(DisplayMode mode)
+{
+    switch (mode)
+    {
+        case DisplayMode::TEMPERATURE: return DisplayMode::MOTION;
+        case DisplayMode::HUMIDITY:    return DisplayMode::TEMPERATURE;
+        case DisplayMode::LIGHT:       return DisplayMode::HUMIDITY;
+        case DisplayMode::MOTION:      return DisplayMode::LIGHT;
+    }
+    return DisplayMode::TEMPERATURE;
+}
+
 void InputTask(void *pvParameters)
 {
-    DisplayMode currentMode = TEMPERATURE;
+    DisplayMode currentMode = DisplayMode::TEMPERATURE;
 
     int lastCLK = gpio_get_level(ENCODER_CLK_PIN);
 
@@ -30,25 +54,11 @@ void InputTask(void *pvParameters)
 
             if (currentDT != currentCLK)
             {
-                if (currentMode == MOTION)
-                {
-                    currentMode = TEMPERATURE;
-                }
-                else
-                {
-                    currentMode = (DisplayMode)(currentMode + 1);
-                }
+                currentMode = nextDisplayMode(currentMode);
             }
             else
             {
-                if (currentMode == TEMPERATURE)
-                {
-                    currentMode = MOTION;
-                }
-                else
-                {
-                    currentMode = (DisplayMode)(currentMode - 1);
-                }
+                currentMode = previousDisplayMode(currentMode);
             }
 
             xQueueOverwrite(displayModeQueue, &currentMode);

@@ -426,7 +426,7 @@ void DisplayTask(void *pvParameters)
     SensorData sensorData = {};
 
     DisplayMode currentMode =
-        TEMPERATURE;
+        DisplayMode::TEMPERATURE;
 
     SystemState currentState =
         ACTIVE;
@@ -675,7 +675,7 @@ void DisplayTask(void *pvParameters)
 
                 switch (currentMode)
                 {
-                    case TEMPERATURE:
+                    case DisplayMode::TEMPERATURE:
                     {
                         char temperatureText[16];
 
@@ -708,7 +708,7 @@ void DisplayTask(void *pvParameters)
                         break;
                     }
 
-                    case HUMIDITY:
+                    case DisplayMode::HUMIDITY:
                     {
                         char humidityText[16];
 
@@ -741,7 +741,7 @@ void DisplayTask(void *pvParameters)
                         break;
                     }
 
-                    case LIGHT:
+                    case DisplayMode::LIGHT:
                     {
                         char lightText[16];
 
@@ -774,7 +774,7 @@ void DisplayTask(void *pvParameters)
                         break;
                     }
 
-                    case MOTION:
+                    case DisplayMode::MOTION:
                     {
                         oled_write_string(
                             2,

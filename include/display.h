@@ -4,13 +4,13 @@
 
 #include "sensors.h"
 
-typedef enum
+enum class DisplayMode
 {
     TEMPERATURE,
     HUMIDITY,
     LIGHT,
     MOTION
-} DisplayMode;
+};
 
 void DisplayTask(void *pvParameters);
 
