@@ -9,22 +9,6 @@
 #include "driver/gpio.h"
 
 #define BUZZER_PIN GPIO_NUM_26
-#define EVENT_ALARM BIT2
-
-AlarmState evaluateTemperature(float temperature)
-{
-    if (temperature < 18.0f)
-    {
-        return LOW_TEMPERATURE;
-    }
-
-    if (temperature > 30.0f)
-    {
-        return HIGH_TEMPERATURE;
-    }
-
-    return NORMAL;
-}
 
 void AlarmTask(void *pvParameters)
 {
