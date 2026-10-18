@@ -47,16 +47,6 @@ extern "C" void app_main(void)
     safe_printf("\nSerial Mutex created successfully\n");
     safe_printf("Shared Serial output is protected by serialMutex\n\n");
 
-    // Alarm logic checks (temporary; replaced by unit tests)
-
-    safe_printf("===== ALARM LOGIC TESTS =====\n");
-    safe_printf("Alarm Test 17.9 C = %d\n", evaluateTemperature(17.9f));
-    safe_printf("Alarm Test 18.0 C = %d\n", evaluateTemperature(18.0f));
-    safe_printf("Alarm Test 24.0 C = %d\n", evaluateTemperature(24.0f));
-    safe_printf("Alarm Test 30.0 C = %d\n", evaluateTemperature(30.0f));
-    safe_printf("Alarm Test 30.1 C = %d\n", evaluateTemperature(30.1f));
-    safe_printf("============================\n\n");
-
     // Hardware initialization: rotary encoder
 
     gpio_config_t encoder_config = {
