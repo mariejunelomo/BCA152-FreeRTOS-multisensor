@@ -1,16 +1,8 @@
-
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
 #include "sensors.h"
-
-enum class DisplayMode
-{
-    TEMPERATURE,
-    HUMIDITY,
-    LIGHT,
-    MOTION
-};
+#include "display_mode.h"
 
 void DisplayTask(void *pvParameters);
 
